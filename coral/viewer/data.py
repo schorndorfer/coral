@@ -205,12 +205,15 @@ def _parse_relation(
     if source_id is None or target_id is None:
         _warn(warnings, filename, line_number, "malformed relation arguments")
         return None
+    schema_valid = descriptor[0] in known_relation_types
+    if not schema_valid:
+        _warn(warnings, filename, line_number, "unknown relation type")
     return ViewerRelation(
         id=fields[0],
         type=descriptor[0],
         source_id=source_id,
         target_id=target_id,
-        schema_valid=descriptor[0] in known_relation_types,
+        schema_valid=schema_valid,
     )
 
 
@@ -226,12 +229,15 @@ def _parse_equivalence_relation(
     if len(descriptor) < 3:
         _warn(warnings, filename, line_number, "malformed equivalence relation")
         return None
+    schema_valid = descriptor[0] in known_relation_types
+    if not schema_valid:
+        _warn(warnings, filename, line_number, "unknown relation type")
     return ViewerRelation(
         id=f"*:{line_number}",
         type=descriptor[0],
         source_id=descriptor[1],
         target_id=descriptor[2],
-        schema_valid=descriptor[0] in known_relation_types,
+        schema_valid=schema_valid,
     )
 
 

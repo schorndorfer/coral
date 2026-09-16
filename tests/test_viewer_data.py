@@ -118,6 +118,42 @@ class ViewerDataTests(unittest.TestCase):
         self.assertIn("cohort-a/note.ann: line 2", document.warnings[0])
         self.assertNotIn("secret annotation", document.warnings[0])
 
+    def test_unknown_standard_relation_is_retained_as_invalid_with_sanitized_warning(self):
+        document = self.load(
+            ann="\n".join(
+                [
+                    "T1\tMedicationName 0 9\tTreatment",
+                    "T2\tDatetime 18 24\tMonday",
+                    "R1\tUnexpectedRelation Arg1:T1 Arg2:T2",
+                ]
+            )
+        )
+
+        self.assertEqual(len(document.relationships), 1)
+        self.assertFalse(document.relationships[0].schema_valid)
+        self.assertEqual(len(document.warnings), 1)
+        self.assertIn("cohort-a/note.ann: line 3: unknown relation type", document.warnings[0])
+        self.assertNotIn("UnexpectedRelation", document.warnings[0])
+        self.assertNotIn(NOTE, document.warnings[0])
+
+    def test_unknown_equivalence_relation_is_retained_as_invalid_with_sanitized_warning(self):
+        document = self.load(
+            ann="\n".join(
+                [
+                    "T1\tMedicationName 0 9\tTreatment",
+                    "T2\tDatetime 18 24\tMonday",
+                    "*\tUnexpectedRelation T1 T2",
+                ]
+            )
+        )
+
+        self.assertEqual(len(document.relationships), 1)
+        self.assertFalse(document.relationships[0].schema_valid)
+        self.assertEqual(len(document.warnings), 1)
+        self.assertIn("cohort-a/note.ann: line 3: unknown relation type", document.warnings[0])
+        self.assertNotIn("UnexpectedRelation", document.warnings[0])
+        self.assertNotIn(NOTE, document.warnings[0])
+
 
 if __name__ == "__main__":
     unittest.main()
