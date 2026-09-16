@@ -161,6 +161,23 @@ class ViewerDataTests(unittest.TestCase):
         self.assertTrue(document.relationships[0].schema_valid)
         self.assertEqual(document.warnings, ())
 
+    def test_drops_relation_with_empty_role_label(self):
+        document = self.load(
+            ann="\n".join(
+                [
+                    "T1\tMedicationName 0 9\tTreatment",
+                    "T2\tDatetime 18 24\tMonday",
+                    "R1\tBeginsOnOrAt :T1 Date:T2",
+                ]
+            )
+        )
+
+        self.assertEqual(document.relationships, ())
+        self.assertEqual(
+            document.warnings,
+            ("cohort-a/note.ann: line 3: malformed relation arguments",),
+        )
+
     def test_unknown_equivalence_relation_is_retained_as_invalid_with_sanitized_warning(self):
         document = self.load(
             ann="\n".join(
@@ -256,6 +273,49 @@ class DatasetDiscoveryTests(unittest.TestCase):
         )
         self.assertTrue(any("breastca/orphan.txt" in warning for warning in result.warnings))
         self.assertTrue(all("private note" not in warning for warning in result.warnings))
+
+    def test_schema_validity_uses_declared_roles_with_generic_role_positions(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name) / "annotated"
+        root.mkdir()
+        (root / "annotation.conf").write_text(
+            "\n".join(
+                [
+                    "[relations]",
+                    "ResultOfTest Desc:<TEST-RES>, Test:<TEST>|ProcedureName",
+                    "TestOrProcedureReveals Test:<TEST>|ProcedureName, Desc:ClinicalCondition",
+                    "InclusionCriteriaFor Arg1:ClinicalCondition, Arg2:ProcedureName",
+                    "[events]",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        text_path = root / "cohort" / "1.txt"
+        text_path.parent.mkdir()
+        text_path.write_text("ABC", encoding="utf-8")
+        text_path.with_suffix(".ann").write_text(
+            "\n".join(
+                [
+                    "T1\tTestResult 0 1\tA",
+                    "T2\tTumorTest 1 2\tB",
+                    "T3\tClinicalCondition 2 3\tC",
+                    "R1\tResultOfTest Desc:T1 Test:T2",
+                    "R2\tResultOfTest Arg1:T2 Reason:T3",
+                    "R3\tTestOrProcedureReveals Test:T2 Prob:T3",
+                    "R4\tInclusionCriteriaFor Treatment:T2 Prob:T3",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = load_dataset(root)
+
+        self.assertEqual(
+            [relation.schema_valid for relation in result.documents[0].relationships],
+            [True, False, False, True],
+        )
+        self.assertEqual(result.counts.schema_valid_relationships, 2)
 
     def test_visibility_hides_auxiliary_entities_unless_requested(self):
         document = load_dataset(self.make_dataset()).documents[1]

@@ -10,6 +10,7 @@ import re
 AUTOMATED_ENTITY_TYPES = frozenset({"PROBLEM", "TREATMENT", "TEST", "SectionAnnotate"})
 STRUCTURAL_ENTITY_TYPES = frozenset({"SectionSkip", "hpi_start", "hpi_end", "ap_start", "ap_end"})
 AUXILIARY_ENTITY_TYPES = AUTOMATED_ENTITY_TYPES | STRUCTURAL_ENTITY_TYPES
+BRAT_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,8 @@ class ViewerRelation:
     source_id: str
     target_id: str
     schema_valid: bool
+    source_role: str = ""
+    target_role: str = ""
 
 
 @dataclass(frozen=True)
@@ -71,9 +74,20 @@ class DatasetLoadResult:
     counts: DatasetCounts
 
 
+@dataclass(frozen=True)
+class RelationSchema:
+    source_role: str
+    target_role: str
+
+
 def parse_relation_types(config_path: Path) -> frozenset[str]:
     """Return BRAT relation names declared between [relations] and [events]."""
-    relation_types: set[str] = set()
+    return frozenset(parse_relation_schemas(config_path))
+
+
+def parse_relation_schemas(config_path: Path) -> dict[str, tuple[RelationSchema, ...]]:
+    """Parse configured relation argument roles from the BRAT relation schema."""
+    definitions: list[tuple[str, tuple[str, str]]] = []
     in_relations = False
     for raw_line in Path(config_path).read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -84,10 +98,24 @@ def parse_relation_types(config_path: Path) -> frozenset[str]:
             break
         if not in_relations or not line or line.startswith("#") or raw_line[:1].isspace():
             continue
-        relation_name = line.split(maxsplit=1)[0]
-        if not relation_name.startswith("<"):
-            relation_types.add(relation_name)
-    return frozenset(relation_types)
+        if line.startswith("<"):
+            continue
+        relation_name, *definition = line.split(maxsplit=1)
+        if len(definition) != 1:
+            continue
+        arguments = definition[0].split(",")
+        if len(arguments) < 2:
+            continue
+        definitions.append((relation_name, (arguments[0], arguments[1])))
+
+    schemas: dict[str, list[RelationSchema]] = {}
+    for relation_name, arguments in definitions:
+        source_role = _schema_argument_role(arguments[0])
+        target_role = _schema_argument_role(arguments[1])
+        if source_role is None or target_role is None:
+            continue
+        schemas.setdefault(relation_name, []).append(RelationSchema(source_role, target_role))
+    return {relation_name: tuple(entries) for relation_name, entries in schemas.items()}
 
 
 def load_dataset(root: str | Path) -> DatasetLoadResult:
@@ -105,9 +133,11 @@ def load_dataset(root: str | Path) -> DatasetLoadResult:
     warnings: list[str] = []
     config_path = root_path / "annotation.conf"
     try:
-        relation_types = parse_relation_types(config_path)
+        relation_schemas = parse_relation_schemas(config_path)
+        relation_types = frozenset(relation_schemas)
     except (OSError, UnicodeDecodeError):
         relation_types = frozenset()
+        relation_schemas = {}
         warnings.append("annotation.conf: unable to read relation schema")
 
     documents: list[ViewerDocument] = []
@@ -116,7 +146,13 @@ def load_dataset(root: str | Path) -> DatasetLoadResult:
         if not annotation_path.is_file():
             warnings.append(f"{_relative_filename(text_path, root_path)}: missing annotation sidecar")
             continue
-        document = load_document(text_path, annotation_path, root_path, relation_types)
+        document = load_document(
+            text_path,
+            annotation_path,
+            root_path,
+            relation_types,
+            relation_schemas,
+        )
         documents.append(replace(document, key=_document_key(text_path, root_path)))
         warnings.extend(document.warnings)
 
@@ -185,6 +221,7 @@ def load_document(
     ann_path: Path,
     root: Path,
     known_relation_types: frozenset[str],
+    relation_schemas: dict[str, tuple[RelationSchema, ...]] | None = None,
 ) -> ViewerDocument:
     """Load one note and its BRAT sidecar without exposing malformed input in warnings."""
     text_path = Path(text_path)
@@ -238,7 +275,7 @@ def load_document(
         if _has_attribute_target(attribute, entity_ids, annotation_filename, line_number, warnings)
     )
     relationships = tuple(
-        relation
+        _with_schema_validity(relation, relation_schemas)
         for line_number, relation in relations_with_lines
         if _has_relation_targets(relation, entity_ids, annotation_filename, line_number, warnings)
     )
@@ -329,7 +366,7 @@ def _parse_relation(
     if argument_ids is None:
         _warn(warnings, filename, line_number, "malformed relation arguments")
         return None
-    source_id, target_id = argument_ids
+    source_role, source_id, target_role, target_id = argument_ids
     schema_valid = descriptor[0] in known_relation_types
     if not schema_valid:
         _warn(warnings, filename, line_number, "unknown relation type")
@@ -339,6 +376,8 @@ def _parse_relation(
         source_id=source_id,
         target_id=target_id,
         schema_valid=schema_valid,
+        source_role=source_role,
+        target_role=target_role,
     )
 
 
@@ -366,17 +405,45 @@ def _parse_equivalence_relation(
     )
 
 
-def _relation_argument_ids(arguments: list[str]) -> tuple[str, str] | None:
+def _relation_argument_ids(arguments: list[str]) -> tuple[str, str, str, str] | None:
     """Return the first two BRAT relation targets, regardless of their role names."""
-    argument_ids: list[str] = []
+    parsed_arguments: list[tuple[str, str]] = []
     for argument in arguments:
-        _, separator, entity_id = argument.partition(":")
-        if not separator or not entity_id:
+        role, separator, entity_id = argument.partition(":")
+        if not separator or not entity_id or not BRAT_ROLE_RE.fullmatch(role):
             continue
-        argument_ids.append(entity_id)
-        if len(argument_ids) == 2:
-            return argument_ids[0], argument_ids[1]
+        parsed_arguments.append((role, entity_id))
+        if len(parsed_arguments) == 2:
+            (source_role, source_id), (target_role, target_id) = parsed_arguments
+            return source_role, source_id, target_role, target_id
     return None
+
+
+def _schema_argument_role(argument: str) -> str | None:
+    role, separator, _ = argument.strip().partition(":")
+    return role if separator and BRAT_ROLE_RE.fullmatch(role) else None
+
+
+def _with_schema_validity(
+    relation: ViewerRelation,
+    relation_schemas: dict[str, tuple[RelationSchema, ...]] | None,
+) -> ViewerRelation:
+    if not relation.schema_valid or not relation_schemas or relation.id.startswith("*:"):
+        return relation
+    schemas = relation_schemas.get(relation.type)
+    if not schemas:
+        return relation
+    if any(
+        _schema_role_matches(schema.source_role, relation.source_role, "Arg1")
+        and _schema_role_matches(schema.target_role, relation.target_role, "Arg2")
+        for schema in schemas
+    ):
+        return relation
+    return replace(relation, schema_valid=False)
+
+
+def _schema_role_matches(schema_role: str, relation_role: str, generic_role: str) -> bool:
+    return schema_role == generic_role or schema_role == relation_role
 
 
 def _has_attribute_target(
