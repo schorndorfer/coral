@@ -40,7 +40,7 @@ Add a local, read-only Streamlit application for browsing CORAL clinical notes a
 
 The loader recursively discovers `.txt` files, pairs each with the same-stem `.ann` file, and sorts documents by cohort and natural document ID. It parses BRAT data directly into the viewer records so discontinuous spans remain exact and malformed lines can be isolated. It shares the existing preannotation type definitions from `coral.dataprocessor.brat` but does not change the benchmarking parser. Structural section annotations (`SectionSkip`, `hpi_start`, `hpi_end`, `ap_start`, and `ap_end`) are tracked separately so the published entity total and the visible clinical-entity count are both clear.
 
-Supported annotation records are text-bound entities (`T`), attributes/modifiers (`A` or `M`), binary relations (`R`), and equivalence-style relations (`*`). Relation types are checked against `annotation.conf`; unknown types are skipped with a warning, which excludes the release's single obsolete `TreatmentTypeRel` record from the published relationship count. Unsupported records are also skipped with a warning. Attributes and relationships whose target entities are missing are retained only as warnings.
+Supported annotation records are text-bound entities (`T`), attributes/modifiers (`A` or `M`), binary relations (`R`), and equivalence-style relations (`*`). Relation types are checked against `annotation.conf`; unknown types are retained as invalid records for diagnostics but excluded from display and published counts, which excludes the release's single obsolete `TreatmentTypeRel` record. Unsupported records are skipped with a warning. Attributes and relationships whose target entities are missing are retained only as warnings.
 
 ### Highlight renderer
 
