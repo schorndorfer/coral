@@ -107,9 +107,11 @@ Inference appends to an existing output CSV, so use a new output filename when s
 
 ## Exploring annotations locally
 
-The annotation viewer reads a local BRAT dataset directory only; it does not upload notes or call external services.
+The annotation viewer reads a local BRAT dataset directory only; it does not upload notes or call external services. Project configuration binds Streamlit to `127.0.0.1` and disables usage telemetry. Launch from the repository root with the same settings stated explicitly:
 
 ```bash
 CORAL_DATA_DIR=/absolute/path/to/coral/annotated \
-streamlit run streamlit_app.py
+streamlit run streamlit_app.py \
+  --server.address 127.0.0.1 \
+  --browser.gatherUsageStats false
 ```

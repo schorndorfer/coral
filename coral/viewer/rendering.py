@@ -51,7 +51,7 @@ def render_highlighted_text(
     ordered_boundaries = sorted(boundaries)
     for start, end in zip(ordered_boundaries, ordered_boundaries[1:]):
         active_entities = _active_entities(spans, start, end)
-        fragment = escape(text[start:end], quote=True)
+        fragment = _escape_note_fragment(text[start:end])
         if active_entities:
             rendered.append(_highlight(fragment, active_entities, selected_entity_id))
         else:
@@ -61,6 +61,15 @@ def render_highlighted_text(
         '<div class="coral-note" '
         'style="white-space: pre-wrap; overflow-wrap: anywhere">'
         f"{''.join(rendered)}</div>"
+    )
+
+
+def _escape_note_fragment(fragment: str) -> str:
+    """Escape note text without leaving literal line breaks for Markdown."""
+    return (
+        escape(fragment, quote=True)
+        .replace("\r", "&#13;")
+        .replace("\n", "&#10;")
     )
 
 

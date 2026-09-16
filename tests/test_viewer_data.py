@@ -67,6 +67,38 @@ class ViewerDataTests(unittest.TestCase):
         self.assertTrue(all(relation.schema_valid for relation in document.relationships))
         self.assertEqual(document.warnings, ())
 
+    def test_parses_m_modifiers_with_and_without_values(self):
+        document = self.load(
+            ann="\n".join(
+                [
+                    "T1\tMedicationName 0 9\tTreatment",
+                    "M1\tNegationModalityVal T1 negated",
+                    "M2\tHistorical T1",
+                ]
+            )
+        )
+
+        self.assertEqual(
+            [
+                (attribute.id, attribute.type, attribute.entity_id, attribute.value)
+                for attribute in document.attributes
+            ],
+            [
+                ("M1", "NegationModalityVal", "T1", "negated"),
+                ("M2", "Historical", "T1", None),
+            ],
+        )
+        self.assertEqual(document.warnings, ())
+
+    def test_m_modifier_missing_target_is_dropped_with_sanitized_warning(self):
+        document = self.load(ann="M1\tHistorical T404 synthetic-value")
+
+        self.assertEqual(document.attributes, ())
+        self.assertEqual(
+            document.warnings,
+            ("cohort-a/note.ann: line 1: attribute references a missing entity",),
+        )
+
     def test_marks_automated_and_structural_entities_as_auxiliary(self):
         annotations = "\n".join(
             f"T{index}\t{entity_type} 0 1\tX"

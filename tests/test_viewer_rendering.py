@@ -97,6 +97,50 @@ class HighlightRenderingTests(unittest.TestCase):
         )
         self.assert_rendered_text(note, rendered)
 
+    def test_markdown_syntax_after_blank_lines_remains_inside_html_note(self):
+        note = (
+            "Paragraph one.\n\n"
+            "# Literal heading\n\n"
+            "- literal list item\n\n"
+            "*literal emphasis*\n\n"
+            "![literal image](https://invalid.example/image.png)"
+        )
+
+        rendered = render_highlighted_text(note, ())
+
+        self.assertNotIn("\n", rendered)
+        self.assertEqual(rendered.count('<div class="coral-note"'), 1)
+        self.assert_rendered_text(note, rendered)
+
+    def test_entity_metadata_is_escaped_in_all_html_attributes(self):
+        entity = self.entity(
+            'T1" onmouseover="synthetic()',
+            '<img src=x onerror="synthetic()">',
+            (Span(0, 1),),
+        )
+
+        rendered = render_highlighted_text("X", (entity,))
+
+        self.assertIn(
+            'data-entity-ids="T1&quot; onmouseover=&quot;synthetic()"',
+            rendered,
+        )
+        self.assertIn(
+            'data-entity-types="&lt;img src=x onerror=&quot;synthetic()&quot;&gt;"',
+            rendered,
+        )
+        self.assertIn(
+            'title="&lt;img src=x onerror=&quot;synthetic()&quot;&gt; '
+            '(T1&quot; onmouseover=&quot;synthetic())"',
+            rendered,
+        )
+        self.assertIn(
+            'aria-label="&lt;img src=x onerror=&quot;synthetic()&quot;&gt; '
+            '(T1&quot; onmouseover=&quot;synthetic())"',
+            rendered,
+        )
+        self.assertNotIn("<img", rendered)
+
     def test_formats_all_entity_offsets_for_display(self):
         entity = self.entity("T7", "Problem", (Span(1, 3), Span(5, 8)))
 

@@ -249,7 +249,7 @@ def load_document(
             entity = _parse_entity(line, len(text), annotation_filename, line_number, warnings)
             if entity is not None:
                 entities.append(entity)
-        elif record_id.startswith("A"):
+        elif record_id.startswith(("A", "M")):
             attribute = _parse_attribute(line, annotation_filename, line_number, warnings)
             if attribute is not None:
                 attributes_with_lines.append((line_number, attribute))
