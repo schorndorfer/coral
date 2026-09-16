@@ -45,3 +45,71 @@ The code and annotation schema is shared under Creative Commons Attribution-NonC
 Further details can be found on [this](https://creativecommons.org/licenses/by-nc-sa/4.0/) page. 
 Additionally, the dataset derived from this schema is shared under the PhysioNet Credentialed Health Data License 1.5.0, which is intended to be used only within non-commercial, sharealike setups similar to the CC BY-NC-SA license.
 
+## Running on Apple Silicon
+
+Run the following commands from the repository root. Python 3.12 is recommended for broad PyTorch and Transformers compatibility.
+
+```bash
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+uv pip install torch transformers accelerate pandas numpy evaluate rouge-score absl-py scikit-learn nltk sentencepiece huggingface-hub streamlit
+```
+
+Confirm that PyTorch can use the Mac GPU:
+
+```bash
+python -c "import torch; print(torch.backends.mps.is_available())"
+```
+
+The result should be `True`. CORAL automatically prefers CUDA, then Apple Metal Performance Shaders (MPS), and finally CPU. MPS uses half-precision model weights and does not enable CUDA-only 8-bit loading.
+
+The annotated dataset directory must contain matching BRAT `.txt` and `.ann` files. Create the inference data with:
+
+```bash
+mkdir -p data output
+python -m coral.dataprocessor.create_inference_data \
+  -annot_data_dir /absolute/path/to/annotated/dataset \
+  -fdata coral_inference.csv \
+  -dir_data ./data
+```
+
+Models are loaded from local files by default. A 1.5B to 3B instruct model is a practical starting point for a Mac with 16 GB of unified memory:
+
+```bash
+hf download Qwen/Qwen2.5-3B-Instruct \
+  --local-dir ./models/qwen-2.5-3b-instruct
+```
+
+Run inference with batch size 1 to limit memory usage. `PYTORCH_ENABLE_MPS_FALLBACK=1` allows operations unsupported by MPS to fall back to CPU:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 \
+python -m coral.benchmarking.open_source_benchmarking \
+  -fdata coral_inference.csv \
+  -fout qwen_outputs.csv \
+  -dir_data ./data \
+  -dir_out ./output \
+  -model_name_or_path ./models/qwen-2.5-3b-instruct \
+  -batch_size 1
+```
+
+Evaluate the saved model responses with:
+
+```bash
+python -m coral.benchmarking.evaluate_model \
+  -fdata coral_inference.csv \
+  -fout qwen_outputs.csv \
+  -dir_data ./data \
+  -dir_out ./output
+```
+
+Inference appends to an existing output CSV, so use a new output filename when starting a fresh run.
+
+## Exploring annotations locally
+
+The annotation viewer reads a local BRAT dataset directory only; it does not upload notes or call external services.
+
+```bash
+CORAL_DATA_DIR=/absolute/path/to/coral/annotated \
+streamlit run streamlit_app.py
+```
