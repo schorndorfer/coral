@@ -325,11 +325,11 @@ def _parse_relation(
     if not descriptor:
         _warn(warnings, filename, line_number, "malformed relation descriptor")
         return None
-    source_id = _argument_id(descriptor[1:], "Arg1:")
-    target_id = _argument_id(descriptor[1:], "Arg2:")
-    if source_id is None or target_id is None:
+    argument_ids = _relation_argument_ids(descriptor[1:])
+    if argument_ids is None:
         _warn(warnings, filename, line_number, "malformed relation arguments")
         return None
+    source_id, target_id = argument_ids
     schema_valid = descriptor[0] in known_relation_types
     if not schema_valid:
         _warn(warnings, filename, line_number, "unknown relation type")
@@ -366,10 +366,16 @@ def _parse_equivalence_relation(
     )
 
 
-def _argument_id(arguments: list[str], prefix: str) -> str | None:
+def _relation_argument_ids(arguments: list[str]) -> tuple[str, str] | None:
+    """Return the first two BRAT relation targets, regardless of their role names."""
+    argument_ids: list[str] = []
     for argument in arguments:
-        if argument.startswith(prefix) and len(argument) > len(prefix):
-            return argument[len(prefix) :]
+        _, separator, entity_id = argument.partition(":")
+        if not separator or not entity_id:
+            continue
+        argument_ids.append(entity_id)
+        if len(argument_ids) == 2:
+            return argument_ids[0], argument_ids[1]
     return None
 
 

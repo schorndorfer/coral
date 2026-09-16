@@ -143,6 +143,24 @@ class ViewerDataTests(unittest.TestCase):
         self.assertNotIn("UnexpectedRelation", document.warnings[0])
         self.assertNotIn(NOTE, document.warnings[0])
 
+    def test_loads_relation_with_schema_named_arguments(self):
+        document = self.load(
+            ann="\n".join(
+                [
+                    "T1\tMedicationName 0 9\tTreatment",
+                    "T2\tDatetime 18 24\tMonday",
+                    "R1\tBeginsOnOrAt Treatment:T1 Date:T2",
+                ]
+            )
+        )
+
+        self.assertEqual(
+            [(relation.source_id, relation.target_id) for relation in document.relationships],
+            [("T1", "T2")],
+        )
+        self.assertTrue(document.relationships[0].schema_valid)
+        self.assertEqual(document.warnings, ())
+
     def test_unknown_equivalence_relation_is_retained_as_invalid_with_sanitized_warning(self):
         document = self.load(
             ann="\n".join(
