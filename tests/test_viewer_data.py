@@ -4,7 +4,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from coral.viewer.data import AUXILIARY_ENTITY_TYPES, Span, load_document
+from coral.viewer.data import (
+    AUXILIARY_ENTITY_TYPES,
+    Span,
+    load_dataset,
+    load_document,
+    parse_relation_types,
+    visible_entities,
+)
 
 
 NOTE = "Treatment started Monday. Mass remained stable."
@@ -153,6 +160,130 @@ class ViewerDataTests(unittest.TestCase):
         self.assertIn("cohort-a/note.ann: line 3: unknown relation type", document.warnings[0])
         self.assertNotIn("UnexpectedRelation", document.warnings[0])
         self.assertNotIn(NOTE, document.warnings[0])
+
+
+class DatasetDiscoveryTests(unittest.TestCase):
+    def make_dataset(self) -> Path:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name) / "annotated"
+        root.mkdir()
+        (root / "annotation.conf").write_text(
+            "\n".join(
+                [
+                    "[relations]",
+                    "Relates Arg1:<ENTITY>, Arg2:<ENTITY>",
+                    "  <ENTITY> continued definition",
+                    "<RELATION_MACRO>",
+                    "Coreference Arg1:<ENTITY>, Arg2:<ENTITY>",
+                    "# this is a comment",
+                    "",
+                    "[events]",
+                    "Event:T1",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        for cohort, annotation in {
+            "pdac": "\n".join(
+                [
+                    "T1\tMedicationName 0 1\tA",
+                    "T2\tPROBLEM 1 2\tB",
+                    "T3\tSectionSkip 2 3\tC",
+                    "A1\tCertainty T1 high",
+                    "A2\tCertainty T2 low",
+                    "R1\tRelates Arg1:T1 Arg2:T3",
+                    "R2\tUnexpectedRelation Arg1:T1 Arg2:T2",
+                ]
+            ),
+            "breastca": "\n".join(
+                [
+                    "T1\tMedicationName 0 1\tD",
+                    "T2\tSectionSkip 1 2\tE",
+                    "T3\tTEST 2 3\tF",
+                    "A1\tCertainty T1 high",
+                    "R1\tCoreference Arg1:T1 Arg2:T2",
+                    "R2\tUnexpectedRelation Arg1:T1 Arg2:T3",
+                ]
+            ),
+        }.items():
+            note = root / cohort / "1.txt"
+            note.parent.mkdir()
+            note.write_text("ABC" if cohort == "pdac" else "DEF", encoding="utf-8")
+            note.with_suffix(".ann").write_text(annotation, encoding="utf-8")
+        (root / "breastca" / "orphan.txt").write_text("private note", encoding="utf-8")
+        return root
+
+    def test_parses_only_relation_names_in_relations_section(self):
+        root = self.make_dataset()
+
+        self.assertEqual(
+            parse_relation_types(root / "annotation.conf"),
+            frozenset({"Relates", "Coreference"}),
+        )
+
+    def test_discovers_naturally_sorted_documents_and_counts_published_annotations(self):
+        root = self.make_dataset()
+
+        result = load_dataset(root)
+
+        self.assertEqual([document.key for document in result.documents], ["breastca/1", "pdac/1"])
+        self.assertEqual(result.counts.documents, 2)
+        self.assertEqual(result.counts.expert_entities, 4)
+        self.assertEqual(result.counts.attributes, 2)
+        self.assertEqual(result.counts.schema_valid_relationships, 2)
+        self.assertEqual(
+            [relation.schema_valid for document in result.documents for relation in document.relationships],
+            [True, False, True, False],
+        )
+        self.assertTrue(any("breastca/orphan.txt" in warning for warning in result.warnings))
+        self.assertTrue(all("private note" not in warning for warning in result.warnings))
+
+    def test_visibility_hides_auxiliary_entities_unless_requested(self):
+        document = load_dataset(self.make_dataset()).documents[1]
+
+        self.assertEqual([entity.id for entity in visible_entities(document, False)], ["T1"])
+        self.assertEqual([entity.id for entity in visible_entities(document, True)], ["T1", "T2", "T3"])
+        self.assertEqual(
+            visible_entities(document, False, frozenset({"SectionSkip"})),
+            (),
+        )
+        self.assertEqual(
+            [entity.id for entity in visible_entities(document, True, frozenset({"SectionSkip"}))],
+            ["T3"],
+        )
+
+    def test_invalid_or_empty_dataset_paths_return_actionable_warnings(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        file_path = root / "file.txt"
+        file_path.write_text("not a directory", encoding="utf-8")
+        empty_directory = root / "empty"
+        empty_directory.mkdir()
+
+        for path, phrase in (
+            (root / "missing", "does not exist"),
+            (file_path, "not a directory"),
+            (empty_directory, "no .txt files"),
+        ):
+            result = load_dataset(path)
+            self.assertEqual(result.documents, ())
+            self.assertEqual(result.counts.documents, 0)
+            self.assertTrue(any(phrase in warning for warning in result.warnings))
+
+    def test_natural_sort_handles_numeric_and_alphabetic_document_names(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        for name in ("10", "2", "alpha"):
+            text_path = root / f"{name}.txt"
+            text_path.write_text("X", encoding="utf-8")
+            text_path.with_suffix(".ann").write_text("", encoding="utf-8")
+
+        result = load_dataset(root)
+
+        self.assertEqual([document.key for document in result.documents], ["2", "10", "alpha"])
 
 
 if __name__ == "__main__":

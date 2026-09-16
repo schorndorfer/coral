@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+import re
 
 
 AUTOMATED_ENTITY_TYPES = frozenset({"PROBLEM", "TREATMENT", "TEST", "SectionAnnotate"})
@@ -53,6 +54,130 @@ class ViewerDocument:
     attributes: tuple[ViewerAttribute, ...]
     relationships: tuple[ViewerRelation, ...]
     warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DatasetCounts:
+    documents: int
+    expert_entities: int
+    attributes: int
+    schema_valid_relationships: int
+
+
+@dataclass(frozen=True)
+class DatasetLoadResult:
+    documents: tuple[ViewerDocument, ...]
+    warnings: tuple[str, ...]
+    counts: DatasetCounts
+
+
+def parse_relation_types(config_path: Path) -> frozenset[str]:
+    """Return BRAT relation names declared between [relations] and [events]."""
+    relation_types: set[str] = set()
+    in_relations = False
+    for raw_line in Path(config_path).read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line == "[relations]":
+            in_relations = True
+            continue
+        if line == "[events]":
+            break
+        if not in_relations or not line or line.startswith("#") or raw_line[:1].isspace():
+            continue
+        relation_name = line.split(maxsplit=1)[0]
+        if not relation_name.startswith("<"):
+            relation_types.add(relation_name)
+    return frozenset(relation_types)
+
+
+def load_dataset(root: str | Path) -> DatasetLoadResult:
+    """Discover BRAT text/annotation pairs and summarize their published annotations."""
+    root_path = Path(root)
+    if not root_path.exists():
+        return _empty_dataset_result("Dataset path does not exist")
+    if not root_path.is_dir():
+        return _empty_dataset_result("Dataset path is not a directory")
+
+    text_paths = sorted(root_path.rglob("*.txt"), key=_natural_path_key)
+    if not text_paths:
+        return _empty_dataset_result("Dataset contains no .txt files")
+
+    warnings: list[str] = []
+    config_path = root_path / "annotation.conf"
+    try:
+        relation_types = parse_relation_types(config_path)
+    except (OSError, UnicodeDecodeError):
+        relation_types = frozenset()
+        warnings.append("annotation.conf: unable to read relation schema")
+
+    documents: list[ViewerDocument] = []
+    for text_path in text_paths:
+        annotation_path = text_path.with_suffix(".ann")
+        if not annotation_path.is_file():
+            warnings.append(f"{_relative_filename(text_path, root_path)}: missing annotation sidecar")
+            continue
+        document = load_document(text_path, annotation_path, root_path, relation_types)
+        documents.append(replace(document, key=_document_key(text_path, root_path)))
+        warnings.extend(document.warnings)
+
+    document_tuple = tuple(documents)
+    expert_ids_by_document = {
+        document.key: {
+            entity.id
+            for entity in document.entities
+            if entity.type not in AUTOMATED_ENTITY_TYPES
+        }
+        for document in document_tuple
+    }
+    counts = DatasetCounts(
+        documents=len(document_tuple),
+        expert_entities=sum(len(ids) for ids in expert_ids_by_document.values()),
+        attributes=sum(
+            attribute.entity_id in expert_ids_by_document[document.key]
+            for document in document_tuple
+            for attribute in document.attributes
+        ),
+        schema_valid_relationships=sum(
+            relation.schema_valid
+            and relation.source_id in expert_ids_by_document[document.key]
+            and relation.target_id in expert_ids_by_document[document.key]
+            for document in document_tuple
+            for relation in document.relationships
+        ),
+    )
+    return DatasetLoadResult(document_tuple, tuple(warnings), counts)
+
+
+def visible_entities(
+    document: ViewerDocument,
+    show_auxiliary: bool,
+    entity_types: frozenset[str] | None = None,
+) -> tuple[ViewerEntity, ...]:
+    """Return entities allowed by the auxiliary and type filters."""
+    return tuple(
+        entity
+        for entity in document.entities
+        if (show_auxiliary or not entity.auxiliary)
+        and (entity_types is None or entity.type in entity_types)
+    )
+
+
+def _empty_dataset_result(warning: str) -> DatasetLoadResult:
+    return DatasetLoadResult((), (warning,), DatasetCounts(0, 0, 0, 0))
+
+
+def _document_key(text_path: Path, root: Path) -> str:
+    try:
+        return text_path.relative_to(root).with_suffix("").as_posix()
+    except ValueError:
+        return text_path.stem
+
+
+def _natural_path_key(path: Path) -> tuple[object, ...]:
+    return tuple(
+        int(part) if part.isdigit() else part.casefold()
+        for part in re.split(r"(\d+)", path.as_posix())
+    )
 
 
 def load_document(
