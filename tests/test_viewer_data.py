@@ -155,7 +155,7 @@ class ViewerDataTests(unittest.TestCase):
             ann="T1\tClinicalCondition 0 5;8 12\tAlpha\n  Beta",
         )
 
-        self.assertEqual(document.entities[0].text, "Alpha\n  Beta")
+        self.assertTrue(document.entities[0].text == "Alpha\n  Beta")
         self.assertEqual(document.warnings, ())
 
     def test_joins_consecutive_multiline_continuations(self):
@@ -164,7 +164,7 @@ class ViewerDataTests(unittest.TestCase):
             ann="T1\tClinicalCondition 0 5;8 12;15 20\tAlpha\n  Beta\n  Gamma",
         )
 
-        self.assertEqual(document.entities[0].text, "Alpha\n  Beta\n  Gamma")
+        self.assertTrue(document.entities[0].text == "Alpha\n  Beta\n  Gamma")
         self.assertEqual(document.warnings, ())
 
     def test_orphan_continuation_warns_without_exposing_text(self):
