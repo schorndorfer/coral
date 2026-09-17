@@ -160,6 +160,7 @@ cython_debug/
 #.idea/
 
 # Local clinical data, downloaded models, and generated benchmark outputs
+.DS_Store
 /data/
 /models/
 /output/

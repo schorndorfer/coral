@@ -8,25 +8,30 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from coral.benchmarking.hardware import (
+    get_device,
+    model_load_kwargs,
+    move_model_to_device,
+    should_compile,
+)
 from coral.utils.task_prompts import OncPrompt
 from coral.utils.utils import append_to_csv
 from coral.utils.dataprocessing import AnnotatedDataset
 
 
 def load_model(model_name_or_path, local_files_only=True, device_map="auto",
-               load_in_8bit=True, **kwargs):
-    if not torch.cuda.is_available():
-        print("No cuda found")
-        load_in_8bit = False
+               load_in_8bit=True, *, device=None, **kwargs):
+    device = device or get_device(torch)
+    load_kwargs = model_load_kwargs(torch, device, device_map, load_in_8bit)
+    load_kwargs.update(kwargs)
 
-    print("Loading model")
+    print(f"Loading model on {device.type}")
     model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                  local_files_only=local_files_only,
-                                                 device_map=device_map,
-                                                 load_in_8bit=load_in_8bit,
-                                                 **kwargs
+                                                 **load_kwargs
                                                  )
-    if torch.__version__ >= "2" and sys.platform != "win32":
+    model = move_model_to_device(model, device)
+    if torch.__version__ >= "2" and should_compile(device, sys.platform):
         model = torch.compile(model)
     print("Completed model loading")
     return model
@@ -115,7 +120,7 @@ def get_model_response(model, tokenizer, messages, max_new_tokens=1024, only_new
     """
     tokenized_msgs = format_hf_chat_template(tokenizer, messages)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = getattr(model, "device", None) or get_device(torch)
 
     tokenized_msgs.to(device)
     outputs = model.generate(**tokenized_msgs,
