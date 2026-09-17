@@ -113,6 +113,42 @@ class PresenterHelperTests(unittest.TestCase):
             "TreatmentDosage (T1)",
         )
 
+    def test_event_target_relationships_preserve_presenter_direction(self) -> None:
+        document = ViewerDocument(
+            key="cohort/note",
+            document_id="note",
+            cohort="cohort",
+            text="synthetic note",
+            entities=(self.source, self.target),
+            attributes=(),
+            relationships=(ViewerRelation("R1", "Treats", "T2", "E1", True),),
+            warnings=(),
+            events=(ViewerEvent("E1", "Treatment", "T1", ()),),
+        )
+
+        outgoing = related_rows(document, "T2", "outgoing")
+        incoming = related_rows(document, "T1", "incoming")
+        self.assertTrue(
+            any(
+                row["relationship"] == "Treats (R1)"
+                and row["entity"] == "Diagnosis (T1)"
+                and row["event"] == "Treatment (E1)"
+                and row["offsets"] == "0-4"
+                for row in outgoing
+            ),
+            "outgoing event-target relationship preserves endpoint metadata",
+        )
+        self.assertTrue(
+            any(
+                row["relationship"] == "Treats (R1)"
+                and row["entity"] == "Medication (T2)"
+                and row["event"] == "Treatment (E1)"
+                and row["offsets"] == "9-13"
+                for row in incoming
+            ),
+            "incoming event-target relationship preserves endpoint metadata",
+        )
+
     def test_event_rows_include_argument_role_type_id_and_annotation_text(self) -> None:
         """An event argument row must retain its role and resolvable annotation context."""
         document = ViewerDocument(
@@ -135,8 +171,13 @@ class PresenterHelperTests(unittest.TestCase):
         )
 
         arguments = streamlit_app.event_rows(document, "T1")[0]["arguments"]
-        self.assertTrue(arguments.startswith("Medication: Medication (T2) — "), "event argument keeps role and target metadata")
-        self.assertTrue(arguments.endswith(self.target.text), "event argument keeps target context")
+        self.assertTrue(
+            arguments.startswith("Medication: Medication (T2) — "),
+            "event argument keeps role and target metadata",
+        )
+        self.assertTrue(
+            arguments.endswith(self.target.text), "event argument keeps target context"
+        )
 
     def test_warning_summary_groups_sanitized_reasons(self) -> None:
         """A warning summary must group reasons without retaining file or line details."""
@@ -289,28 +330,57 @@ class StreamlitAppSmokeTests(unittest.TestCase):
             dataframe_records = [
                 element.value.to_dict("records") for element in app.dataframe
             ]
-            self.assertIn(
-                [{"attribute": "Certainty", "value": "high"}], dataframe_records
+            self.assertTrue(
+                any(
+                    len(rows) == 1
+                    and rows[0].get("attribute") == "Certainty"
+                    and rows[0].get("value") == "high"
+                    for rows in dataframe_records
+                ),
+                "attribute metadata is presented",
             )
             relationship_rows = next(
                 rows for rows in dataframe_records if rows and "relationship" in rows[0]
             )
-            self.assertTrue(any(row["relationship"] == "Relates (R1)" and row["event"] == "" and row["entity"] == "PROBLEM (T2)" and row["offsets"] == "1-2" for row in relationship_rows), "ordinary relationship metadata is presented")
-
-            self.assertIn(
-                [
-                    {
-                        "event": "MedicationName (E1)",
-                        "trigger": "MedicationName (T1)",
-                        "arguments": "None",
-                    }
-                ],
-                dataframe_records,
+            self.assertTrue(
+                any(
+                    row["relationship"] == "Relates (R1)"
+                    and row["event"] == ""
+                    and row["entity"] == "PROBLEM (T2)"
+                    and row["offsets"] == "1-2"
+                    for row in relationship_rows
+                ),
+                "ordinary relationship metadata is presented",
             )
-            self.assertTrue(any(row["relationship"] == "Relates (R2)" and row["event"] == "MedicationName (E1)" and row["entity"] == "PROBLEM (T2)" and row["offsets"] == "1-2" for row in relationship_rows), "event-linked relationship metadata is presented")
-            self.assertIn(
-                [{"category": "unknown relation type", "count": 2}],
-                dataframe_records,
+
+            self.assertTrue(
+                any(
+                    len(rows) == 1
+                    and rows[0].get("event") == "MedicationName (E1)"
+                    and rows[0].get("trigger") == "MedicationName (T1)"
+                    and rows[0].get("arguments") == "None"
+                    for rows in dataframe_records
+                ),
+                "event metadata is presented",
+            )
+            self.assertTrue(
+                any(
+                    row["relationship"] == "Relates (R2)"
+                    and row["event"] == "MedicationName (E1)"
+                    and row["entity"] == "PROBLEM (T2)"
+                    and row["offsets"] == "1-2"
+                    for row in relationship_rows
+                ),
+                "event-linked relationship metadata is presented",
+            )
+            self.assertTrue(
+                any(
+                    len(rows) == 1
+                    and rows[0].get("category") == "unknown relation type"
+                    and rows[0].get("count") == 2
+                    for rows in dataframe_records
+                ),
+                "warning summary metadata is presented",
             )
             self.assertEqual(len(app.expander), 1)
             self.assertEqual(app.expander[0].label, "Warning details")

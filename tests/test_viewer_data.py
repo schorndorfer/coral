@@ -187,6 +187,10 @@ class ViewerDataTests(unittest.TestCase):
 
         self.assertEqual(document.events, ())
         self.assertEqual(len(document.warnings), 2)
+        self.assertTrue(
+            any("event references a missing entity" in warning for warning in document.warnings),
+            "missing event target is reported",
+        )
         self.assertTrue(all("Treatment" not in warning for warning in document.warnings))
 
     def test_rejects_extra_event_argument_with_sanitized_warning(self):
@@ -464,6 +468,38 @@ class DatasetDiscoveryTests(unittest.TestCase):
         resolved = viewer_data.resolve_entity(document, "E1")
         self.assertIsNotNone(resolved, "event trigger resolves to an entity")
         self.assertEqual((resolved.id, resolved.type, resolved.spans), ("T1", "TreatmentDosage", (Span(0, 4),)))
+        self.assertEqual(result.counts.schema_valid_relationships, 0)
+        self.assertEqual(result.counts.events, 1)
+        self.assertEqual(result.counts.event_linked_relationships, 1)
+
+    def test_counts_and_resolves_event_relationship_target_separately(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name) / "annotated"
+        root.mkdir()
+        (root / "annotation.conf").write_text(
+            "[relations]\nTreatmentDesc Desc:MedicationName, Therapy:TreatmentDosage\n[events]\n",
+            encoding="utf-8",
+        )
+        text_path = root / "cohort" / "1.txt"
+        text_path.parent.mkdir()
+        text_path.write_text("drug Dose", encoding="utf-8")
+        text_path.with_suffix(".ann").write_text(
+            "T1\tMedicationName 0 4\tdrug\n"
+            "T2\tTreatmentDosage 5 9\tDose\n"
+            "E1\tTreatmentDosage:T2\n"
+            "R1\tTreatmentDesc Desc:T1 Therapy:E1\n",
+            encoding="utf-8",
+        )
+
+        result = load_dataset(root)
+        document = result.documents[0]
+        relation = document.relationships[0]
+        resolved = viewer_data.resolve_entity(document, relation.target_id)
+
+        self.assertEqual((relation.source_id, relation.target_id), ("T1", "E1"))
+        self.assertIsNotNone(resolved, "event relationship target resolves")
+        self.assertEqual((resolved.id, resolved.type, resolved.spans), ("T2", "TreatmentDosage", (Span(5, 9),)))
         self.assertEqual(result.counts.schema_valid_relationships, 0)
         self.assertEqual(result.counts.events, 1)
         self.assertEqual(result.counts.event_linked_relationships, 1)
