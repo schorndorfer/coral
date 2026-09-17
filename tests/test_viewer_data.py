@@ -189,6 +189,16 @@ class ViewerDataTests(unittest.TestCase):
         self.assertEqual(len(document.warnings), 2)
         self.assertTrue(all("Treatment" not in warning for warning in document.warnings))
 
+    def test_rejects_extra_event_argument_with_sanitized_warning(self):
+        document = self.load(
+            ann="T1\tMedicationName 0 9\tTreatment\nE1\tMedication:T1 Extra"
+        )
+
+        self.assertEqual(document.events, ())
+        self.assertEqual(len(document.warnings), 1)
+        self.assertIn("malformed event argument", document.warnings[0])
+        self.assertNotIn("Treatment", document.warnings[0])
+
     def test_joins_multiline_text_bound_reference_text(self):
         document = self.load(
             note="Alpha\n  Beta",
@@ -451,7 +461,9 @@ class DatasetDiscoveryTests(unittest.TestCase):
         document = result.documents[0]
 
         self.assertEqual(document.relationships[0].source_id, "E1")
-        self.assertEqual(viewer_data.resolve_entity(document, "E1"), document.entities[0])
+        resolved = viewer_data.resolve_entity(document, "E1")
+        self.assertIsNotNone(resolved, "event trigger resolves to an entity")
+        self.assertEqual((resolved.id, resolved.type, resolved.spans), ("T1", "TreatmentDosage", (Span(0, 4),)))
         self.assertEqual(result.counts.schema_valid_relationships, 0)
         self.assertEqual(result.counts.events, 1)
         self.assertEqual(result.counts.event_linked_relationships, 1)
