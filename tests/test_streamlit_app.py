@@ -286,6 +286,24 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         )
         return root
 
+    def test_warning_panel_only_shows_selected_document_warnings(self) -> None:
+        """Warnings from another document must not appear in the active inspector."""
+        from streamlit.testing.v1 import AppTest
+
+        root = self.make_dataset()
+        with patch.dict(os.environ, {"CORAL_DATA_DIR": str(root)}, clear=False):
+            app = AppTest.from_file(Path(__file__).parents[1] / "streamlit_app.py")
+            app.run()
+            app.button[0].click().run()
+
+            metrics = {metric.label: metric.value for metric in app.metric}
+            self.assertEqual(metrics["Warnings"], "2")
+            self.assertFalse(
+                any(expander.label == "Warning details" for expander in app.expander),
+                "clean selected document has no warning panel",
+            )
+            self.assertEqual(len(app.warning), 0)
+
     def test_loads_and_explores_local_synthetic_annotations(self) -> None:
         """Broken UI state would hide documents, inspector metadata, or auxiliary choices."""
         from streamlit.testing.v1 import AppTest

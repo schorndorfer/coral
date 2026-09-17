@@ -244,8 +244,7 @@ def _show_entity_inspector(
 def _show_warnings(
     dataset: DatasetLoadResult, document: ViewerDocument | None = None
 ) -> None:
-    document_warnings = document.warnings if document is not None else ()
-    warnings = tuple(dict.fromkeys((*dataset.warnings, *document_warnings)))
+    warnings = document.warnings if document is not None else dataset.warnings
     if not warnings:
         return
     st.subheader("Warnings")
