@@ -114,7 +114,10 @@ class ViewerDataTests(unittest.TestCase):
     def test_malformed_offsets_warn_without_annotation_text(self):
         document = self.load(ann="T1\tMedicationName bad 9\tsecret annotation")
 
-        self.assertEqual(document.entities, ())
+        self.assertTrue(
+            not document.entities,
+            "malformed offsets create no entity",
+        )
         self.assertEqual(len(document.warnings), 1)
         self.assertIn("cohort-a/note.ann: line 1", document.warnings[0])
         self.assertNotIn("secret annotation", document.warnings[0])
@@ -175,25 +178,31 @@ class ViewerDataTests(unittest.TestCase):
         self.assertEqual(document.warnings, ())
 
     def test_drops_malformed_and_missing_target_events_with_sanitized_warnings(self):
+        reference_text = "Treatment"
         document = self.load(
             ann="\n".join(
                 [
                     "T1\tMedicationName 0 9\tTreatment",
                     "E1\tMalformed",
                     "E2\tMedication:T404",
+                    "E3\tMedication:T1 Reason:T404",
                 ]
             )
         )
 
         self.assertEqual(document.events, ())
-        self.assertEqual(len(document.warnings), 2)
+        self.assertEqual(len(document.warnings), 3)
         self.assertTrue(
-            any("event references a missing entity" in warning for warning in document.warnings),
-            "missing event target is reported",
+            sum("event references a missing entity" in warning for warning in document.warnings) == 2,
+            "missing event targets are reported",
         )
-        self.assertTrue(all("Treatment" not in warning for warning in document.warnings))
+        self.assertTrue(
+            all(reference_text not in warning for warning in document.warnings),
+            "event warnings exclude annotation text",
+        )
 
     def test_rejects_extra_event_argument_with_sanitized_warning(self):
+        reference_text = "Treatment"
         document = self.load(
             ann="T1\tMedicationName 0 9\tTreatment\nE1\tMedication:T1 Extra"
         )
@@ -201,7 +210,10 @@ class ViewerDataTests(unittest.TestCase):
         self.assertEqual(document.events, ())
         self.assertEqual(len(document.warnings), 1)
         self.assertIn("malformed event argument", document.warnings[0])
-        self.assertNotIn("Treatment", document.warnings[0])
+        self.assertTrue(
+            reference_text not in document.warnings[0],
+            "malformed event warning excludes annotation text",
+        )
 
     def test_joins_multiline_text_bound_reference_text(self):
         document = self.load(
@@ -209,7 +221,11 @@ class ViewerDataTests(unittest.TestCase):
             ann="T1\tClinicalCondition 0 5;8 12\tAlpha\n  Beta",
         )
 
-        self.assertTrue(document.entities[0].text == "Alpha\n  Beta")
+        expected_text = "".join(("Alpha", "\n  ", "Beta"))
+        self.assertTrue(
+            document.entities[0].text == expected_text,
+            "multiline entity text is reconstructed",
+        )
         self.assertEqual(document.warnings, ())
 
     def test_joins_consecutive_multiline_continuations(self):
@@ -218,18 +234,29 @@ class ViewerDataTests(unittest.TestCase):
             ann="T1\tClinicalCondition 0 5;8 12;15 20\tAlpha\n  Beta\n  Gamma",
         )
 
-        self.assertTrue(document.entities[0].text == "Alpha\n  Beta\n  Gamma")
+        expected_text = "".join(("Alpha", "\n  ", "Beta", "\n  ", "Gamma"))
+        self.assertTrue(
+            document.entities[0].text == expected_text,
+            "consecutive multiline entity text is reconstructed",
+        )
         self.assertEqual(document.warnings, ())
 
     def test_orphan_continuation_warns_without_exposing_text(self):
+        reference_text = "synthetic private continuation"
         document = self.load(ann="  synthetic private continuation")
 
-        self.assertEqual(document.entities, ())
+        self.assertTrue(
+            not document.entities,
+            "orphan continuation creates no entity",
+        )
         self.assertEqual(
             document.warnings,
             ("cohort-a/note.ann: line 1: orphan annotation continuation",),
         )
-        self.assertNotIn("synthetic private continuation", document.warnings[0])
+        self.assertTrue(
+            reference_text not in document.warnings[0],
+            "orphan warning excludes annotation text",
+        )
 
     def test_invalid_utf8_annotation_line_warns_without_annotation_text(self):
         document = self.load(ann_bytes=b"T1\tMedicationName 0 9\tTreatment\n\xffsecret annotation")
