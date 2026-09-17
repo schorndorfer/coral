@@ -149,6 +149,34 @@ class ViewerDataTests(unittest.TestCase):
         self.assertIn("cohort-a/note.ann: line 1", document.warnings[0])
         self.assertNotIn("secret annotation", document.warnings[0])
 
+    def test_joins_multiline_text_bound_reference_text(self):
+        document = self.load(
+            note="Alpha\n  Beta",
+            ann="T1\tClinicalCondition 0 5;8 12\tAlpha\n  Beta",
+        )
+
+        self.assertEqual(document.entities[0].text, "Alpha\n  Beta")
+        self.assertEqual(document.warnings, ())
+
+    def test_joins_consecutive_multiline_continuations(self):
+        document = self.load(
+            note="Alpha\n  Beta\n  Gamma",
+            ann="T1\tClinicalCondition 0 5;8 12;15 20\tAlpha\n  Beta\n  Gamma",
+        )
+
+        self.assertEqual(document.entities[0].text, "Alpha\n  Beta\n  Gamma")
+        self.assertEqual(document.warnings, ())
+
+    def test_orphan_continuation_warns_without_exposing_text(self):
+        document = self.load(ann="  synthetic private continuation")
+
+        self.assertEqual(document.entities, ())
+        self.assertEqual(
+            document.warnings,
+            ("cohort-a/note.ann: line 1: orphan annotation continuation",),
+        )
+        self.assertNotIn("synthetic private continuation", document.warnings[0])
+
     def test_invalid_utf8_annotation_line_warns_without_annotation_text(self):
         document = self.load(ann_bytes=b"T1\tMedicationName 0 9\tTreatment\n\xffsecret annotation")
 

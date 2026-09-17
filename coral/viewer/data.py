@@ -235,15 +235,7 @@ def load_document(
     attributes_with_lines: list[tuple[int, ViewerAttribute]] = []
     relations_with_lines: list[tuple[int, ViewerRelation]] = []
 
-    for line_number, raw_line in enumerate(_read_lines(ann_path), start=1):
-        try:
-            line = raw_line.decode("utf-8")
-        except UnicodeDecodeError:
-            _warn(warnings, annotation_filename, line_number, "invalid UTF-8")
-            continue
-
-        if not line.strip():
-            continue
+    for line_number, line in _read_logical_records(ann_path, annotation_filename, warnings):
         record_id = line.split("\t", 1)[0]
         if record_id.startswith("T"):
             entity = _parse_entity(line, len(text), annotation_filename, line_number, warnings)
@@ -292,6 +284,29 @@ def load_document(
         relationships=relationships,
         warnings=tuple(warnings),
     )
+
+
+def _read_logical_records(
+    path: Path, filename: str, warnings: list[str]
+) -> tuple[tuple[int, str], ...]:
+    records: list[tuple[int, str]] = []
+    for line_number, raw_line in enumerate(path.read_bytes().splitlines(), start=1):
+        try:
+            line = raw_line.decode("utf-8")
+        except UnicodeDecodeError:
+            _warn(warnings, filename, line_number, "invalid UTF-8")
+            continue
+        if not line.strip():
+            continue
+        if line[:1].isspace():
+            if records and records[-1][1].split("\t", 1)[0].startswith("T"):
+                first_line, record = records[-1]
+                records[-1] = (first_line, f"{record}\n{line}")
+            else:
+                _warn(warnings, filename, line_number, "orphan annotation continuation")
+            continue
+        records.append((line_number, line))
+    return tuple(records)
 
 
 def _parse_entity(
