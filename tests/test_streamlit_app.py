@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import os
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 from unittest.mock import patch
 
 from streamlit import config
 
 import streamlit_app
-from coral.viewer.data import Span, ViewerDocument, ViewerEntity, ViewerRelation
+from coral.viewer.data import (
+    Span,
+    ViewerDocument,
+    ViewerEntity,
+    ViewerEvent,
+    ViewerEventArgument,
+    ViewerRelation,
+)
 from streamlit_app import annotation_label, related_rows
 
 
@@ -19,8 +26,12 @@ class PresenterHelperTests(unittest.TestCase):
     """Protect selector and relationship presentation."""
 
     def setUp(self) -> None:
-        self.source = ViewerEntity("T1", "Diagnosis", (Span(0, 4),), "synthetic source", False)
-        self.target = ViewerEntity("T2", "Medication", (Span(9, 13),), "synthetic target", False)
+        self.source = ViewerEntity(
+            "T1", "Diagnosis", (Span(0, 4),), "synthetic source", False
+        )
+        self.target = ViewerEntity(
+            "T2", "Medication", (Span(9, 13),), "synthetic target", False
+        )
         self.document = ViewerDocument(
             key="cohort/note",
             document_id="note",
@@ -44,6 +55,7 @@ class PresenterHelperTests(unittest.TestCase):
             [
                 {
                     "relationship": "Treats (R1)",
+                    "event": "",
                     "entity": "Medication (T2)",
                     "text": "synthetic target",
                     "offsets": "9-13",
@@ -55,6 +67,7 @@ class PresenterHelperTests(unittest.TestCase):
             [
                 {
                     "relationship": "Treats (R1)",
+                    "event": "",
                     "entity": "Diagnosis (T1)",
                     "text": "synthetic source",
                     "offsets": "0-4",
@@ -63,6 +76,84 @@ class PresenterHelperTests(unittest.TestCase):
         )
         for row in related_rows(self.document, "T1", "outgoing"):
             self.assertNotIn(self.document.text, " ".join(row.values()))
+
+    def test_event_rows_and_relationships_preserve_event_metadata(self) -> None:
+        """Dropping event metadata would silently flatten event-linked relationships."""
+        document = ViewerDocument(
+            key="cohort/note",
+            document_id="note",
+            cohort="cohort",
+            text="synthetic note",
+            entities=(
+                ViewerEntity("T1", "TreatmentDosage", (Span(0, 4),), "dose", False),
+                ViewerEntity("T2", "MedicationName", (Span(5, 9),), "drug", False),
+            ),
+            attributes=(),
+            relationships=(ViewerRelation("R1", "TreatmentDesc", "E1", "T2", True),),
+            warnings=(),
+            events=(ViewerEvent("E1", "TreatmentDosage", "T1", ()),),
+        )
+
+        self.assertEqual(
+            streamlit_app.event_rows(document, "T1"),
+            [
+                {
+                    "event": "TreatmentDosage (E1)",
+                    "trigger": "TreatmentDosage (T1)",
+                    "arguments": "None",
+                }
+            ],
+        )
+        self.assertEqual(
+            related_rows(document, "T1", "outgoing")[0]["event"],
+            "TreatmentDosage (E1)",
+        )
+        self.assertEqual(
+            related_rows(document, "T2", "incoming")[0]["entity"],
+            "TreatmentDosage (T1)",
+        )
+
+    def test_event_rows_include_argument_role_type_id_and_annotation_text(self) -> None:
+        """An event argument row must retain its role and resolvable annotation context."""
+        document = ViewerDocument(
+            key="cohort/note",
+            document_id="note",
+            cohort="cohort",
+            text="synthetic note",
+            entities=(self.source, self.target),
+            attributes=(),
+            relationships=(),
+            warnings=(),
+            events=(
+                ViewerEvent(
+                    "E1",
+                    "Treatment",
+                    "T1",
+                    (ViewerEventArgument("Medication", "T2"),),
+                ),
+            ),
+        )
+
+        self.assertEqual(
+            streamlit_app.event_rows(document, "T1")[0]["arguments"],
+            "Medication: Medication (T2) — synthetic target",
+        )
+
+    def test_warning_summary_groups_sanitized_reasons(self) -> None:
+        """A warning summary must group reasons without retaining file or line details."""
+        self.assertEqual(
+            streamlit_app.warning_summary(
+                (
+                    "a.ann: line 1: unknown relation type",
+                    "b.ann: line 2: unknown relation type",
+                    "c.ann: line 3: malformed event record",
+                )
+            ),
+            [
+                {"category": "unknown relation type", "count": 2},
+                {"category": "malformed event record", "count": 1},
+            ],
+        )
 
     def test_related_rows_exclude_schema_invalid_relations(self) -> None:
         document = ViewerDocument(
@@ -108,7 +199,9 @@ class PresenterHelperTests(unittest.TestCase):
         self.assertNotIn("viewer_dataset", state)
         self.assertIn("viewer_load_error", state)
 
-    def test_project_streamlit_config_is_local_only_and_disables_telemetry(self) -> None:
+    def test_project_streamlit_config_is_local_only_and_disables_telemetry(
+        self,
+    ) -> None:
         self.assertEqual(config.get_option("server.address"), "127.0.0.1")
         self.assertFalse(config.get_option("browser.gatherUsageStats"))
 
@@ -143,14 +236,14 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         second.parent.mkdir()
         second.write_text("Beta", encoding="utf-8")
         second.with_suffix(".ann").write_text(
-            "\n".join(
-                [
-                    "T1\tMedicationName 0 1\tB",
-                    "T2\tPROBLEM 1 2\teta",
-                    "A1\tCertainty T1 high",
-                    "R1\tRelates Arg1:T1 Arg2:T2",
-                ]
-            ),
+            "T1\tMedicationName 0 1\tB\n"
+            "T2\tPROBLEM 1 2\teta\n"
+            "A1\tCertainty T1 high\n"
+            "R1\tRelates Arg1:T1 Arg2:T2\n"
+            "E1\tMedicationName:T1\n"
+            "R2\tRelates Arg1:E1 Arg2:T2\n"
+            "R3\tUnknown Arg1:T1 Arg2:T2\n"
+            "R4\tUnknown Arg1:T1 Arg2:T2",
             encoding="utf-8",
         )
         return root
@@ -174,11 +267,15 @@ class StreamlitAppSmokeTests(unittest.TestCase):
                     "Published expert entities": "2",
                     "Published attributes": "1",
                     "Published schema-valid relationships": "0",
-                    "Warnings": "0",
+                    "Events": "1",
+                    "Event-linked relationships": "1",
+                    "Warnings": "2",
                     "Visible annotations": "1",
                 },
             )
-            self.assertEqual(app.selectbox[1].options, ["cohort-a / first", "cohort-b / second"])
+            self.assertEqual(
+                app.selectbox[1].options, ["cohort-a / first", "cohort-b / second"]
+            )
 
             app.selectbox[1].set_value("cohort-b / second").run()
             self.assertEqual(app.selectbox[2].options, ["MedicationName (T1) · 0-1"])
@@ -190,24 +287,63 @@ class StreamlitAppSmokeTests(unittest.TestCase):
             markdown_values = [element.value for element in app.markdown]
             self.assertIn("Type: MedicationName", markdown_values)
             self.assertIn("Offsets: 0-1", markdown_values)
-            dataframe_records = [element.value.to_dict("records") for element in app.dataframe]
-            self.assertIn([{"attribute": "Certainty", "value": "high"}], dataframe_records)
+            dataframe_records = [
+                element.value.to_dict("records") for element in app.dataframe
+            ]
+            self.assertIn(
+                [{"attribute": "Certainty", "value": "high"}], dataframe_records
+            )
+            relationship_rows = next(
+                rows for rows in dataframe_records if rows and "relationship" in rows[0]
+            )
+            self.assertIn(
+                {
+                    "relationship": "Relates (R1)",
+                    "event": "",
+                    "entity": "PROBLEM (T2)",
+                    "text": "eta",
+                    "offsets": "1-2",
+                },
+                relationship_rows,
+            )
+
             self.assertIn(
                 [
                     {
-                        "relationship": "Relates (R1)",
-                        "entity": "PROBLEM (T2)",
-                        "text": "eta",
-                        "offsets": "1-2",
+                        "event": "MedicationName (E1)",
+                        "trigger": "MedicationName (T1)",
+                        "arguments": "None",
                     }
                 ],
                 dataframe_records,
             )
+            self.assertIn(
+                {
+                    "relationship": "Relates (R2)",
+                    "event": "MedicationName (E1)",
+                    "entity": "PROBLEM (T2)",
+                    "text": "eta",
+                    "offsets": "1-2",
+                },
+                relationship_rows,
+            )
+            self.assertIn(
+                [{"category": "unknown relation type", "count": 2}],
+                dataframe_records,
+            )
+            self.assertEqual(len(app.expander), 1)
+            self.assertEqual(app.expander[0].label, "Warning details")
+            self.assertFalse(app.expander[0].proto.expanded)
+            self.assertEqual(len(app.warning), 2)
+            self.assertEqual(len(app.expander[0].warning), 2)
 
             app.toggle[0].set_value(True).run()
             self.assertIn("PROBLEM (T2) · 1-2", app.selectbox[2].options)
             self.assertTrue(
-                any('class="coral-legend-swatch"' in element.value for element in app.markdown)
+                any(
+                    'class="coral-legend-swatch"' in element.value
+                    for element in app.markdown
+                )
             )
             self.assertEqual(len(app.exception), 0)
 

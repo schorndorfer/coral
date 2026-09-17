@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import os
+from collections import Counter
 from html import escape
 from pathlib import Path
 
 import streamlit as st
 
-from coral.viewer.data import DatasetLoadResult, ViewerDocument, ViewerEntity, load_dataset, visible_entities
+from coral.viewer.data import (
+    DatasetLoadResult,
+    ViewerDocument,
+    ViewerEntity,
+    load_dataset,
+    resolve_entity,
+    visible_entities,
+)
 from coral.viewer.rendering import entity_color, format_offsets, render_highlighted_text
 
 
@@ -17,32 +25,77 @@ def annotation_label(entity: ViewerEntity) -> str:
     return f"{entity.type} ({entity.id}) · {format_offsets(entity)}"
 
 
-def related_rows(document: ViewerDocument, entity_id: str, direction: str) -> list[dict[str, str]]:
-    """Return schema-valid relationship rows adjacent to an entity.
+def event_rows(document: ViewerDocument, entity_id: str) -> list[dict[str, str]]:
+    """Return display rows for events triggered by the selected entity."""
+    rows: list[dict[str, str]] = []
+    for event in document.events:
+        if event.trigger_id != entity_id:
+            continue
+        trigger = resolve_entity(document, event.trigger_id)
+        if trigger is None:
+            continue
+        arguments = []
+        for argument in event.arguments:
+            target = resolve_entity(document, argument.target_id)
+            if target is None:
+                continue
+            arguments.append(
+                f"{argument.role}: {target.type} ({target.id}) — {target.text}"
+            )
+        rows.append(
+            {
+                "event": f"{event.type} ({event.id})",
+                "trigger": f"{trigger.type} ({trigger.id})",
+                "arguments": "; ".join(arguments) if arguments else "None",
+            }
+        )
+    return rows
 
-    Missing relation endpoints are ignored so malformed input cannot break the
-    inspector.
-    """
+
+def warning_summary(warnings: tuple[str, ...]) -> list[dict[str, str | int]]:
+    """Group sanitized warning reasons without exposing file or line details."""
+    counts = Counter(warning.rsplit(": ", 1)[-1] for warning in warnings)
+    return [
+        {"category": category, "count": count}
+        for category, count in sorted(
+            counts.items(), key=lambda item: (-item[1], item[0])
+        )
+    ]
+
+
+def related_rows(
+    document: ViewerDocument, entity_id: str, direction: str
+) -> list[dict[str, str]]:
+    """Return schema-valid relationship rows adjacent to a resolved entity."""
     if direction not in {"incoming", "outgoing"}:
         raise ValueError("direction must be incoming or outgoing")
 
-    entities_by_id = {entity.id: entity for entity in document.entities}
+    events_by_id = {event.id: event for event in document.events}
     rows: list[dict[str, str]] = []
     for relation in document.relationships:
         if not relation.schema_valid:
             continue
-        if direction == "incoming" and relation.target_id == entity_id:
-            related_entity_id = relation.source_id
-        elif direction == "outgoing" and relation.source_id == entity_id:
-            related_entity_id = relation.target_id
+        source = resolve_entity(document, relation.source_id)
+        target = resolve_entity(document, relation.target_id)
+        if source is None or target is None:
+            continue
+        if direction == "incoming" and target.id == entity_id:
+            related_entity = source
+        elif direction == "outgoing" and source.id == entity_id:
+            related_entity = target
         else:
             continue
-        related_entity = entities_by_id.get(related_entity_id)
-        if related_entity is None:
-            continue
+        endpoint_events = [
+            events_by_id[endpoint_id]
+            for endpoint_id in (relation.source_id, relation.target_id)
+            if endpoint_id in events_by_id
+        ]
         rows.append(
             {
                 "relationship": f"{relation.type} ({relation.id})",
+                "event": ", ".join(
+                    f"{event.type} ({event.id})" for event in endpoint_events
+                ),
                 "entity": f"{related_entity.type} ({related_entity.id})",
                 "text": related_entity.text,
                 "offsets": format_offsets(related_entity),
@@ -52,7 +105,11 @@ def related_rows(document: ViewerDocument, entity_id: str, direction: str) -> li
 
 
 def _document_label(document: ViewerDocument) -> str:
-    return f"{document.cohort} / {document.document_id}" if document.cohort else document.document_id
+    return (
+        f"{document.cohort} / {document.document_id}"
+        if document.cohort
+        else document.document_id
+    )
 
 
 def legend_html(entity_types: tuple[str, ...] | list[str]) -> str:
@@ -89,7 +146,9 @@ def _load_dataset_from_sidebar() -> None:
         st.session_state.pop("viewer_dataset", None)
         st.session_state.pop("viewer_dataset_path", None)
         st.session_state.pop("effective_document_key", None)
-        st.session_state["viewer_load_error"] = "Unable to load the local dataset. Check the directory."
+        st.session_state["viewer_load_error"] = (
+            "Unable to load the local dataset. Check the directory."
+        )
         return
 
     st.session_state["viewer_dataset"] = loaded
@@ -163,7 +222,17 @@ def _show_entity_inspector(
     else:
         st.caption("No attributes")
 
-    for direction, heading in (("incoming", "Incoming relationships"), ("outgoing", "Outgoing relationships")):
+    st.subheader("Events")
+    attached_events = event_rows(document, selected_entity.id)
+    if attached_events:
+        st.dataframe(attached_events, hide_index=True, width="stretch")
+    else:
+        st.caption("No events")
+
+    for direction, heading in (
+        ("incoming", "Incoming relationships"),
+        ("outgoing", "Outgoing relationships"),
+    ):
         st.subheader(heading)
         rows = related_rows(document, selected_entity.id, direction)
         if rows:
@@ -172,14 +241,18 @@ def _show_entity_inspector(
             st.caption("None")
 
 
-def _show_warnings(dataset: DatasetLoadResult, document: ViewerDocument | None = None) -> None:
+def _show_warnings(
+    dataset: DatasetLoadResult, document: ViewerDocument | None = None
+) -> None:
     document_warnings = document.warnings if document is not None else ()
     warnings = tuple(dict.fromkeys((*dataset.warnings, *document_warnings)))
     if not warnings:
         return
     st.subheader("Warnings")
-    for warning in warnings:
-        st.warning(warning)
+    st.dataframe(warning_summary(warnings), hide_index=True, width="stretch")
+    with st.expander("Warning details"):
+        for warning in warnings:
+            st.warning(warning)
 
 
 def main() -> None:
@@ -218,6 +291,11 @@ def main() -> None:
         st.metric(
             "Published schema-valid relationships",
             dataset.counts.schema_valid_relationships,
+        )
+        st.metric("Events", dataset.counts.events)
+        st.metric(
+            "Event-linked relationships",
+            dataset.counts.event_linked_relationships,
         )
         st.metric("Warnings", len(dataset.warnings))
 
@@ -261,14 +339,22 @@ def main() -> None:
         entity_ids = [entity.id for entity in displayed_entities]
         entities_by_id = {entity.id: entity for entity in displayed_entities}
         if st.session_state.get("selected_entity_id") not in entity_ids:
-            st.session_state["selected_entity_id"] = entity_ids[0] if entity_ids else None
-        selected_entity_id = st.selectbox(
-            "Annotation",
-            entity_ids,
-            format_func=lambda entity_id: annotation_label(entities_by_id[entity_id]),
-            key="selected_entity_id",
-            disabled=not entity_ids,
-        ) if entity_ids else None
+            st.session_state["selected_entity_id"] = (
+                entity_ids[0] if entity_ids else None
+            )
+        selected_entity_id = (
+            st.selectbox(
+                "Annotation",
+                entity_ids,
+                format_func=lambda entity_id: annotation_label(
+                    entities_by_id[entity_id]
+                ),
+                key="selected_entity_id",
+                disabled=not entity_ids,
+            )
+            if entity_ids
+            else None
+        )
         selected_entity = entities_by_id.get(selected_entity_id)
         _show_entity_inspector(document, displayed_entities, selected_entity)
         _show_warnings(dataset, document)
