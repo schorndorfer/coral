@@ -37,6 +37,20 @@ class ViewerAttribute:
 
 
 @dataclass(frozen=True)
+class ViewerEventArgument:
+    role: str
+    target_id: str
+
+
+@dataclass(frozen=True)
+class ViewerEvent:
+    id: str
+    type: str
+    trigger_id: str
+    arguments: tuple[ViewerEventArgument, ...]
+
+
+@dataclass(frozen=True)
 class ViewerRelation:
     id: str
     type: str
@@ -57,6 +71,7 @@ class ViewerDocument:
     attributes: tuple[ViewerAttribute, ...]
     relationships: tuple[ViewerRelation, ...]
     warnings: tuple[str, ...]
+    events: tuple[ViewerEvent, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -65,6 +80,8 @@ class DatasetCounts:
     expert_entities: int
     attributes: int
     schema_valid_relationships: int
+    events: int = 0
+    event_linked_relationships: int = 0
 
 
 @dataclass(frozen=True)
@@ -165,6 +182,10 @@ def load_dataset(root: str | Path) -> DatasetLoadResult:
         }
         for document in document_tuple
     }
+    event_ids_by_document = {
+        document.key: {event.id for event in document.events}
+        for document in document_tuple
+    }
     counts = DatasetCounts(
         documents=len(document_tuple),
         expert_entities=sum(len(ids) for ids in expert_ids_by_document.values()),
@@ -177,6 +198,16 @@ def load_dataset(root: str | Path) -> DatasetLoadResult:
             relation.schema_valid
             and relation.source_id in expert_ids_by_document[document.key]
             and relation.target_id in expert_ids_by_document[document.key]
+            for document in document_tuple
+            for relation in document.relationships
+        ),
+        events=sum(len(document.events) for document in document_tuple),
+        event_linked_relationships=sum(
+            relation.schema_valid
+            and (
+                relation.source_id in event_ids_by_document[document.key]
+                or relation.target_id in event_ids_by_document[document.key]
+            )
             for document in document_tuple
             for relation in document.relationships
         ),
@@ -196,6 +227,16 @@ def visible_entities(
         if (show_auxiliary or not entity.auxiliary)
         and (entity_types is None or entity.type in entity_types)
     )
+
+
+def resolve_entity(document: ViewerDocument, annotation_id: str) -> ViewerEntity | None:
+    """Resolve an entity ID or an event ID to the event's trigger entity."""
+    entities_by_id = {entity.id: entity for entity in document.entities}
+    entity = entities_by_id.get(annotation_id)
+    if entity is not None:
+        return entity
+    event = next((event for event in document.events if event.id == annotation_id), None)
+    return entities_by_id.get(event.trigger_id) if event is not None else None
 
 
 def _empty_dataset_result(warning: str) -> DatasetLoadResult:
@@ -233,6 +274,7 @@ def load_document(
 
     entities: list[ViewerEntity] = []
     attributes_with_lines: list[tuple[int, ViewerAttribute]] = []
+    events_with_lines: list[tuple[int, ViewerEvent]] = []
     relations_with_lines: list[tuple[int, ViewerRelation]] = []
 
     for line_number, line in _read_logical_records(ann_path, annotation_filename, warnings):
@@ -245,6 +287,10 @@ def load_document(
             attribute = _parse_attribute(line, annotation_filename, line_number, warnings)
             if attribute is not None:
                 attributes_with_lines.append((line_number, attribute))
+        elif record_id.startswith("E"):
+            event = _parse_event(line, annotation_filename, line_number, warnings)
+            if event is not None:
+                events_with_lines.append((line_number, event))
         elif record_id.startswith("R"):
             relation = _parse_relation(
                 line, annotation_filename, line_number, known_relation_types, warnings
@@ -266,10 +312,22 @@ def load_document(
         for line_number, attribute in attributes_with_lines
         if _has_attribute_target(attribute, entity_ids, annotation_filename, line_number, warnings)
     )
+    events = tuple(
+        event
+        for line_number, event in events_with_lines
+        if _has_event_targets(event, entity_ids, annotation_filename, line_number, warnings)
+    )
+    event_ids = {event.id for event in events}
     relationships = tuple(
         _with_schema_validity(relation, relation_schemas)
         for line_number, relation in relations_with_lines
-        if _has_relation_targets(relation, entity_ids, annotation_filename, line_number, warnings)
+        if _has_relation_targets(
+            relation,
+            entity_ids | event_ids,
+            annotation_filename,
+            line_number,
+            warnings,
+        )
     )
 
     relative_text_path = _relative_filename(text_path, root)
@@ -283,6 +341,7 @@ def load_document(
         attributes=attributes,
         relationships=relationships,
         warnings=tuple(warnings),
+        events=events,
     )
 
 
@@ -359,6 +418,37 @@ def _parse_attribute(
         type=descriptor[0],
         entity_id=descriptor[1],
         value=descriptor[2] if len(descriptor) == 3 else None,
+    )
+
+
+def _parse_event(
+    line: str, filename: str, line_number: int, warnings: list[str]
+) -> ViewerEvent | None:
+    fields = line.split("\t", 1)
+    if len(fields) != 2 or not fields[0].startswith("E") or len(fields[0]) == 1:
+        _warn(warnings, filename, line_number, "malformed event record")
+        return None
+    descriptor = fields[1].split()
+    if not descriptor:
+        _warn(warnings, filename, line_number, "malformed event descriptor")
+        return None
+    event_type, separator, trigger_id = descriptor[0].partition(":")
+    if not separator or not trigger_id or not BRAT_ROLE_RE.fullmatch(event_type):
+        _warn(warnings, filename, line_number, "malformed event trigger")
+        return None
+
+    arguments: list[ViewerEventArgument] = []
+    for token in descriptor[1:]:
+        role, separator, target_id = token.partition(":")
+        if not separator or not target_id or not BRAT_ROLE_RE.fullmatch(role):
+            _warn(warnings, filename, line_number, "malformed event argument")
+            return None
+        arguments.append(ViewerEventArgument(role=role, target_id=target_id))
+    return ViewerEvent(
+        id=fields[0],
+        type=event_type,
+        trigger_id=trigger_id,
+        arguments=tuple(arguments),
     )
 
 
@@ -471,6 +561,20 @@ def _has_attribute_target(
     if attribute.entity_id in entity_ids:
         return True
     _warn(warnings, filename, line_number, "attribute references a missing entity")
+    return False
+
+
+def _has_event_targets(
+    event: ViewerEvent,
+    entity_ids: set[str],
+    filename: str,
+    line_number: int,
+    warnings: list[str],
+) -> bool:
+    target_ids = (event.trigger_id, *(argument.target_id for argument in event.arguments))
+    if all(target_id in entity_ids for target_id in target_ids):
+        return True
+    _warn(warnings, filename, line_number, "event references a missing entity")
     return False
 
 

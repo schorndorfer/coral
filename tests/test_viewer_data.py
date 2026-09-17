@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from coral.viewer import data as viewer_data
 from coral.viewer.data import (
     AUXILIARY_ENTITY_TYPES,
     Span,
@@ -148,6 +149,45 @@ class ViewerDataTests(unittest.TestCase):
         self.assertEqual(len(document.warnings), 1)
         self.assertIn("cohort-a/note.ann: line 1", document.warnings[0])
         self.assertNotIn("secret annotation", document.warnings[0])
+
+    def test_parses_unary_and_argument_bearing_events(self):
+        document = self.load(
+            note="Dose drug reason",
+            ann="\n".join(
+                [
+                    "T1\tTreatmentDosage 0 4\tDose",
+                    "T2\tMedicationName 5 9\tdrug",
+                    "T3\tClinicalCondition 10 16\treason",
+                    "E1\tTreatmentDosage:T1",
+                    "E2\tMedication:T2 Reason:T3",
+                ]
+            ),
+        )
+
+        self.assertEqual(
+            [(event.id, event.type, event.trigger_id) for event in document.events],
+            [("E1", "TreatmentDosage", "T1"), ("E2", "Medication", "T2")],
+        )
+        self.assertEqual(
+            [(argument.role, argument.target_id) for argument in document.events[1].arguments],
+            [("Reason", "T3")],
+        )
+        self.assertEqual(document.warnings, ())
+
+    def test_drops_malformed_and_missing_target_events_with_sanitized_warnings(self):
+        document = self.load(
+            ann="\n".join(
+                [
+                    "T1\tMedicationName 0 9\tTreatment",
+                    "E1\tMalformed",
+                    "E2\tMedication:T404",
+                ]
+            )
+        )
+
+        self.assertEqual(document.events, ())
+        self.assertEqual(len(document.warnings), 2)
+        self.assertTrue(all("Treatment" not in warning for warning in document.warnings))
 
     def test_joins_multiline_text_bound_reference_text(self):
         document = self.load(
@@ -376,6 +416,45 @@ class DatasetDiscoveryTests(unittest.TestCase):
             [True, False, False, True],
         )
         self.assertEqual(result.counts.schema_valid_relationships, 2)
+
+    def test_counts_and_resolves_schema_valid_event_linked_relationships_separately(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name) / "annotated"
+        root.mkdir()
+        (root / "annotation.conf").write_text(
+            "\n".join(
+                [
+                    "[relations]",
+                    "TreatmentDesc Desc:TreatmentDosage, Therapy:MedicationName",
+                    "[events]",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        text_path = root / "cohort" / "1.txt"
+        text_path.parent.mkdir()
+        text_path.write_text("Dose drug", encoding="utf-8")
+        text_path.with_suffix(".ann").write_text(
+            "\n".join(
+                [
+                    "T1\tTreatmentDosage 0 4\tDose",
+                    "T2\tMedicationName 5 9\tdrug",
+                    "E1\tTreatmentDosage:T1",
+                    "R1\tTreatmentDesc Desc:E1 Therapy:T2",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = load_dataset(root)
+        document = result.documents[0]
+
+        self.assertEqual(document.relationships[0].source_id, "E1")
+        self.assertEqual(viewer_data.resolve_entity(document, "E1"), document.entities[0])
+        self.assertEqual(result.counts.schema_valid_relationships, 0)
+        self.assertEqual(result.counts.events, 1)
+        self.assertEqual(result.counts.event_linked_relationships, 1)
 
     def test_visibility_hides_auxiliary_entities_unless_requested(self):
         document = load_dataset(self.make_dataset()).documents[1]
