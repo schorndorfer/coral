@@ -379,6 +379,14 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
             self.assertEqual(len(path.read_text().splitlines()), 1)
             self.assertEqual(json.loads(path.read_text())["doc_idx"], "1")
 
+    def test_notebook_declares_azure_dependencies_and_full_run_guard(self):
+        notebook = Path("notebooks/evaluate_gpt56_sol_azure.py").read_text()
+        self.assertIn('"marimo"', notebook)
+        self.assertIn('"openai"', notebook)
+        self.assertIn("AZURE_OPENAI_API_KEY", notebook)
+        self.assertIn("Run full 515-input evaluation", notebook)
+        self.assertNotIn("OPENAI_API_KEY", notebook.replace("AZURE_OPENAI_API_KEY", ""))
+
 
 if __name__ == "__main__":
     unittest.main()
