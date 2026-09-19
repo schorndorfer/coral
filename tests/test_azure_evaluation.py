@@ -11,10 +11,53 @@ from coral.azure_evaluation import (
     estimate_cost,
     load_azure_settings,
     terminal_keys,
+    to_legacy_output,
+    validate_response,
+)
+
+
+VALID_SYMPTOM_JSON = json.dumps(
+    {
+        "task": "symptoms",
+        "records": [
+            {
+                "symptom": "low appetite",
+                "datetimes": ["unknown"],
+                "evidence_quotes": ["appetite is low"],
+            }
+        ],
+    }
 )
 
 
 class AzureEvaluationHelpersTests(unittest.TestCase):
+    def test_validate_response_requires_verbatim_evidence(self):
+        raw = json.dumps({"task": "symptoms", "records": [{
+            "symptom": "low appetite", "datetimes": ["unknown"],
+            "evidence_quotes": ["appetite is low"],
+        }]})
+        self.assertEqual(
+            validate_response("symptoms", "The appetite is low.", raw)[0]["symptom"],
+            "low appetite",
+        )
+
+    def test_validate_response_rejects_nonverbatim_evidence(self):
+        with self.assertRaisesRegex(ValueError, "evidence"):
+            validate_response("symptoms", "No appetite statement.", VALID_SYMPTOM_JSON)
+
+    def test_to_legacy_output_serializes_symptom_record(self):
+        self.assertEqual(
+            to_legacy_output(
+                "symptoms",
+                [{
+                    "symptom": "low appetite",
+                    "datetimes": ["unknown"],
+                    "evidence_quotes": ["appetite is low"],
+                }],
+            ),
+            "SymptomEnt(Symptom='low appetite', Datetime={'unknown'})",
+        )
+
     def test_load_azure_settings_uses_only_azure_environment_names(self):
         settings = load_azure_settings(
             {

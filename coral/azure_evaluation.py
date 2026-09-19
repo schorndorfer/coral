@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
+from coral import task_to_default_tuple_dict
+
 SOL_INPUT_PER_MILLION = 4.0
 SOL_OUTPUT_PER_MILLION = 20.0
 TERMINAL_STATUSES = {
@@ -17,6 +19,164 @@ TERMINAL_STATUSES = {
     "api_failed",
     "spend_cap_reached",
 }
+
+# These names deliberately follow the JSON response contract rather than the
+# legacy namedtuple spelling.  The ordering is the legacy tuple field order.
+TASK_FIELDS: dict[str, tuple[str, ...]] = {
+    "symptoms": ("symptom", "datetimes"),
+    "symptoms_at_diagnosis": ("symptom", "datetimes"),
+    "symptoms_due_to_cancer": ("symptom", "datetimes"),
+    "radtest_datetime_site_reason_result": (
+        "radiology_test", "datetimes", "sites", "reasons", "results",
+    ),
+    "procedure_datetime_site_reason_result": (
+        "procedure_name", "datetimes", "sites", "reasons", "results",
+    ),
+    "biomarker_datetime": ("biomarker", "datetimes"),
+    "histology_datetime": ("histology", "datetimes"),
+    "metastasis_site_procedure_datetime": (
+        "metastasis", "sites", "procedures", "datetimes",
+    ),
+    "stage_datetime_addtest": ("stage", "datetimes", "additional_testing"),
+    "tnm_datetime_addtest": ("tnm", "datetimes", "additional_testing"),
+    "grade_datetime_addtest": ("grade", "datetimes", "additional_testing"),
+    "prescribed_med_begin_end_reason_continuity_ae": (
+        "medication_name", "begins", "ends", "reasons", "continuity",
+        "confirmed_adverse_events", "potential_adverse_events",
+    ),
+    "future_med_consideration_ae": (
+        "medication_name", "consideration", "potential_adverse_events",
+    ),
+    "genomictest_datetime_result": (
+        "genomic_test_name", "datetimes", "results",
+    ),
+}
+
+_SCALAR_FIELDS = {"symptom", "radiology_test", "procedure_name", "biomarker", "histology", "metastasis", "stage", "tnm", "grade", "medication_name", "continuity", "consideration", "genomic_test_name"}
+
+
+def _require_task(task: str) -> tuple[str, ...]:
+    if task not in TASK_FIELDS or task not in task_to_default_tuple_dict:
+        raise ValueError(f"unknown task: {task}")
+    return TASK_FIELDS[task]
+
+
+def _field_schema(field: str) -> dict[str, object]:
+    if field in _SCALAR_FIELDS:
+        return {"type": "string"}
+    return {"type": "array", "items": {"type": "string"}}
+
+
+def build_request(row: Mapping[str, str]) -> tuple[str, dict[str, object]]:
+    """Build the task-specific instruction and strict Responses API JSON format."""
+    task = row.get("task", "")
+    fields = _require_task(task)
+    record_properties = {field: _field_schema(field) for field in fields}
+    record_properties["evidence_quotes"] = {
+        "type": "array", "items": {"type": "string"}, "minItems": 1,
+    }
+    schema: dict[str, object] = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["task", "records"],
+        "properties": {
+            "task": {"type": "string", "const": task},
+            "records": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [*fields, "evidence_quotes"],
+                    "properties": record_properties,
+                },
+            },
+        },
+    }
+    prompt = (
+        f"Extract {task} records from the supplied clinical section. "
+        "Return exactly one JSON object matching the requested schema. "
+        "Every record must include one or more evidence_quotes copied verbatim from the section.\n\n"
+        f"Clinical section:\n{row.get('section_text', '')}"
+    )
+    return prompt, {
+        "type": "json_schema",
+        "name": f"coral_{task}",
+        "strict": True,
+        "schema": schema,
+    }
+
+
+def _normalized(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _validate_record(fields: tuple[str, ...], record: object, section_text: str) -> dict[str, object]:
+    if not isinstance(record, dict):
+        raise ValueError("record must be an object")
+    expected = {*fields, "evidence_quotes"}
+    if set(record) != expected:
+        raise ValueError("record has missing or unexpected fields")
+    validated: dict[str, object] = {}
+    for field in fields:
+        value = record[field]
+        if field in _SCALAR_FIELDS:
+            if not isinstance(value, str):
+                raise ValueError(f"{field} must be a string")
+        elif not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"{field} must be a list of strings")
+        validated[field] = value
+    quotes = record["evidence_quotes"]
+    if not isinstance(quotes, list) or not quotes or not all(isinstance(quote, str) for quote in quotes):
+        raise ValueError("evidence_quotes must be a non-empty list of strings")
+    normalized_section = _normalized(section_text)
+    if any(_normalized(quote) not in normalized_section for quote in quotes):
+        raise ValueError("evidence_quotes must appear verbatim in section text")
+    validated["evidence_quotes"] = quotes
+    return validated
+
+
+def validate_response(task: str, section_text: str, raw: str) -> list[dict[str, object]]:
+    """Safely parse and validate a model response against its task contract."""
+    fields = _require_task(task)
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError("response must be valid JSON") from error
+    if not isinstance(payload, dict) or set(payload) != {"task", "records"}:
+        raise ValueError("response must contain only task and records")
+    if payload["task"] != task:
+        raise ValueError("response task does not match requested task")
+    records = payload["records"]
+    if not isinstance(records, list):
+        raise ValueError("records must be a list")
+    return [_validate_record(fields, record, section_text) for record in records]
+
+
+def _serialize_set(values: object) -> str:
+    if not isinstance(values, (list, tuple, set)) or not all(isinstance(value, str) for value in values):
+        raise ValueError("legacy set fields must be collections of strings")
+    rendered = sorted({repr(value) for value in values})
+    return "set()" if not rendered else "{" + ", ".join(rendered) + "}"
+
+
+def to_legacy_output(task: str, records: list[dict[str, object]]) -> str:
+    """Render validated JSON records as deterministic legacy namedtuple calls."""
+    fields = _require_task(task)
+    default = task_to_default_tuple_dict[task]
+    if not records:
+        return repr(default)
+    tuple_fields = default._fields
+    rendered_records: list[str] = []
+    for record in records:
+        if not isinstance(record, dict) or not set(fields).issubset(record):
+            raise ValueError("record is missing required task fields")
+        values = []
+        for json_field, tuple_field in zip(fields, tuple_fields, strict=True):
+            value = record[json_field]
+            serialized = repr(value) if json_field in _SCALAR_FIELDS else _serialize_set(value)
+            values.append(f"{tuple_field}={serialized}")
+        rendered_records.append(f"{type(default).__name__}({', '.join(values)})")
+    return ", ".join(rendered_records)
 
 
 @dataclass(frozen=True, repr=False)
