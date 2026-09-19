@@ -3,10 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from coral.utils.dataprocessing import parse_output
 from coral.azure_evaluation import (
     CheckpointRecord,
     Usage,
     append_checkpoint,
+    build_request,
     can_afford,
     estimate_cost,
     load_azure_settings,
@@ -45,6 +47,21 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "evidence"):
             validate_response("symptoms", "No appetite statement.", VALID_SYMPTOM_JSON)
 
+    def test_validate_response_rejects_empty_evidence_quote(self):
+        raw = json.dumps({"task": "symptoms", "records": [{
+            "symptom": "low appetite",
+            "datetimes": ["unknown"],
+            "evidence_quotes": [""],
+        }]})
+        with self.assertRaisesRegex(ValueError, "evidence"):
+            validate_response("symptoms", "The appetite is low.", raw)
+
+    def test_request_schema_requires_nonempty_evidence_quotes(self):
+        _, response_format = build_request({"task": "symptoms"})
+        schema = response_format["schema"]
+        evidence_items = schema["properties"]["records"]["items"]["properties"]["evidence_quotes"]["items"]
+        self.assertEqual(evidence_items["minLength"], 1)
+
     def test_to_legacy_output_serializes_symptom_record(self):
         self.assertEqual(
             to_legacy_output(
@@ -57,6 +74,19 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
             ),
             "SymptomEnt(Symptom='low appetite', Datetime={'unknown'})",
         )
+
+    def test_to_legacy_output_round_trips_empty_set_like_field(self):
+        output = to_legacy_output(
+            "symptoms",
+            [{
+                "symptom": "low appetite",
+                "datetimes": [],
+                "evidence_quotes": ["appetite is low"],
+            }],
+        )
+        parsed, errors = parse_output(output, "symptoms")
+        self.assertEqual(errors, 0)
+        self.assertEqual(parsed[0].Datetime, set())
 
     def test_load_azure_settings_uses_only_azure_environment_names(self):
         settings = load_azure_settings(

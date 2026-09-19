@@ -73,7 +73,7 @@ def build_request(row: Mapping[str, str]) -> tuple[str, dict[str, object]]:
     fields = _require_task(task)
     record_properties = {field: _field_schema(field) for field in fields}
     record_properties["evidence_quotes"] = {
-        "type": "array", "items": {"type": "string"}, "minItems": 1,
+        "type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1,
     }
     schema: dict[str, object] = {
         "type": "object",
@@ -126,7 +126,7 @@ def _validate_record(fields: tuple[str, ...], record: object, section_text: str)
             raise ValueError(f"{field} must be a list of strings")
         validated[field] = value
     quotes = record["evidence_quotes"]
-    if not isinstance(quotes, list) or not quotes or not all(isinstance(quote, str) for quote in quotes):
+    if not isinstance(quotes, list) or not quotes or not all(isinstance(quote, str) and quote for quote in quotes):
         raise ValueError("evidence_quotes must be a non-empty list of strings")
     normalized_section = _normalized(section_text)
     if any(_normalized(quote) not in normalized_section for quote in quotes):
@@ -156,7 +156,9 @@ def _serialize_set(values: object) -> str:
     if not isinstance(values, (list, tuple, set)) or not all(isinstance(value, str) for value in values):
         raise ValueError("legacy set fields must be collections of strings")
     rendered = sorted({repr(value) for value in values})
-    return "set()" if not rendered else "{" + ", ".join(rendered) + "}"
+    # parse_output's legacy regex needs non-empty brace content; unpacking an
+    # empty list is an evaluable empty-set expression that satisfies it.
+    return "{*[]}" if not rendered else "{" + ", ".join(rendered) + "}"
 
 
 def to_legacy_output(task: str, records: list[dict[str, object]]) -> str:
