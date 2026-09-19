@@ -1,3 +1,4 @@
+import ast
 import json
 import tempfile
 import unittest
@@ -183,6 +184,41 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         self.assertEqual(summary.iloc[0].n_examples, 1)
         self.assertEqual(summary.iloc[0].mean_bleu4, 0.8)
         self.assertEqual(summary.iloc[0].mean_em_f1, 2 / 3)
+
+    def test_observed_summary_uses_only_validated_export_keys(self):
+        """A failed prompt cannot admit a synthetic legacy scorer row."""
+        failed_record = {
+            **VALID_RECORD,
+            "doc_idx": "999",
+            "validation_status": "validation_failed",
+        }
+        legacy_frame = write_legacy_csv(
+            [VALID_RECORD, failed_record], self.legacy_path, SETTINGS.deployment,
+        )
+        summary = write_observed_summary(
+            SCORES_WITH_ONE_REAL_AND_ONE_SYNTHETIC_ROW,
+            legacy_frame.loc[:, ["doc_idx", "section_name", "task"]],
+            self.summary_path,
+        )
+        self.assertEqual(summary.iloc[0].n_examples, 1)
+        self.assertEqual(summary.iloc[0].mean_bleu4, 0.8)
+
+    def test_notebook_checkpoint_reader_ignores_a_truncated_jsonl_tail(self):
+        """An interrupted write does not block export of prior complete records."""
+        notebook_tree = ast.parse(Path("notebooks/evaluate_gpt56_sol_azure.py").read_text())
+        reader_node = next(
+            node
+            for node in ast.walk(notebook_tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "read_checkpoint_records"
+        )
+        namespace = {"Path": Path, "json": json}
+        exec(
+            compile(ast.fix_missing_locations(ast.Module(body=[reader_node], type_ignores=[])), "notebook", "exec"),
+            namespace,
+        )
+        checkpoint_path = Path(self.temporary_directory.name) / "truncated.jsonl"
+        checkpoint_path.write_text('{"doc_idx":"1"}\n{"doc_idx":')
+        self.assertEqual(namespace["read_checkpoint_records"](checkpoint_path), [{"doc_idx": "1"}])
 
     def test_runner_retries_once_then_marks_valid_after_retry(self):
         """A malformed first result gets one corrective retry."""
@@ -388,6 +424,8 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         self.assertIn("AZURE_OPENAI_API_VERSION", notebook)
         self.assertIn("Run full 515-input evaluation", notebook)
         self.assertIn("projection_display = mo.vstack", notebook)
+        self.assertIn("exported_keys = legacy_frame.loc[:, [\"doc_idx\", \"section_name\", \"task\"]]", notebook)
+        self.assertIn("except json.JSONDecodeError:", notebook)
         self.assertNotIn("OPENAI_API_KEY", notebook.replace("AZURE_OPENAI_API_KEY", ""))
 
 

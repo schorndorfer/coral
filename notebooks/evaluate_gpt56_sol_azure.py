@@ -32,6 +32,22 @@ def _():
     if str(repository_root) not in sys.path:
         sys.path.insert(0, str(repository_root))
 
+    def read_checkpoint_records(checkpoint_path: Path) -> list[dict[str, object]]:
+        """Read complete checkpoint records while ignoring a truncated JSONL tail."""
+        if not checkpoint_path.exists():
+            return []
+        records: list[dict[str, object]] = []
+        for line in checkpoint_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+        return records
+
     from coral.azure_evaluation import (
         Usage,
         estimate_cost,
@@ -52,6 +68,7 @@ def _():
         os,
         pd,
         pydantic,
+        read_checkpoint_records,
         run_evaluation,
         write_legacy_csv,
         write_observed_summary,
@@ -333,7 +350,6 @@ def _(
     aggregate_score_path,
     checkpoint_path,
     instance_score_path,
-    json,
     legacy_path,
     mo,
     observed_summary_path,
@@ -341,6 +357,7 @@ def _(
     Path,
     pd,
     reformatted_score_path,
+    read_checkpoint_records,
     run_results,
     settings,
     write_legacy_csv,
@@ -349,11 +366,7 @@ def _(
     if run_results.empty or settings is None:
         legacy_export_message = mo.md("### Legacy export\nRun an evaluation before exporting accepted responses.")
     else:
-        checkpoint_records = [
-            json.loads(line)
-            for line in checkpoint_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        checkpoint_records = read_checkpoint_records(checkpoint_path)
         legacy_frame = write_legacy_csv(checkpoint_records, legacy_path, settings.deployment)
         if legacy_frame.empty:
             legacy_export_message = mo.callout(
@@ -373,8 +386,8 @@ def _(
                 str(output_path),
             )
             instance_scores = pd.read_csv(instance_score_path)
-            prompted_rows = run_results.loc[:, ["doc_idx", "section_name", "task"]]
-            write_observed_summary(instance_scores, prompted_rows, observed_summary_path)
+            exported_keys = legacy_frame.loc[:, ["doc_idx", "section_name", "task"]]
+            write_observed_summary(instance_scores, exported_keys, observed_summary_path)
             legacy_export_message = mo.md(
                 f"### Legacy export\nWrote `{legacy_path}` and the gpt56_sol_azure scoring "
                 "artifacts. The repository-wide legacy macro remains flawed; use the "
