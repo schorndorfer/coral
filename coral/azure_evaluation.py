@@ -210,10 +210,13 @@ def write_legacy_csv(
         task = record.get("task")
         if not isinstance(task, str):
             raise ValueError("validated record must include task")
+        section_text = record.get("section_text")
+        if not isinstance(section_text, str) or not section_text:
+            raise ValueError("validated record must include section_text")
         legacy_rows.append({
             "doc_idx": record.get("doc_idx", ""),
             "section_name": record.get("section_name", ""),
-            "section_text": record.get("section_text", ""),
+            "section_text": section_text,
             "task": task,
             "model": model,
             "output": to_legacy_output(task, parsed_records),
@@ -284,6 +287,7 @@ class CheckpointRecord:
     cost: float | None = None
     elapsed_seconds: float | None = None
     raw_attempts: list[str] | None = None
+    section_text: str | None = None
 
 
 class ResponsesAPI(Protocol):
@@ -376,6 +380,7 @@ def run_evaluation(
         base = {
             "doc_idx": doc_idx,
             "section_name": section_name,
+            "section_text": section_text,
             "task": task,
             "model": settings.deployment,
         }

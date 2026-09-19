@@ -140,6 +140,17 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         checkpoint = json.loads(self.checkpoint.read_text())
         self.assertEqual(checkpoint["output_tokens"], 20)
 
+    def test_runner_results_export_the_original_section_text(self):
+        """Legacy exports retain the source section from an accepted runner result."""
+        results = run_evaluation(
+            ONE_ROW, FakeClient(VALID_SYMPTOM_JSON, 100, 20), SETTINGS,
+            self.checkpoint, 1.0, 512, "low",
+        )
+        exported = write_legacy_csv(
+            results.to_dict("records"), self.legacy_path, SETTINGS.deployment,
+        )
+        self.assertEqual(exported.iloc[0].section_text, "The appetite is low.")
+
     def test_write_legacy_csv_excludes_failed_records(self):
         """Only validated records become legacy scorer inputs."""
         frame = write_legacy_csv(
@@ -154,6 +165,15 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
             ["doc_idx", "section_name", "section_text", "task", "model", "output", "conversion_status"],
         )
         self.assertNotIn("must-not-be-exported", self.legacy_path.read_text())
+
+    def test_write_legacy_csv_requires_section_text(self):
+        """Accepted records without source text cannot become scorer inputs."""
+        with self.assertRaisesRegex(ValueError, "section_text"):
+            write_legacy_csv(
+                [{key: value for key, value in VALID_RECORD.items() if key != "section_text"}],
+                self.legacy_path,
+                "gpt-5.6-sol",
+            )
 
     def test_observed_summary_excludes_synthetic_cartesian_rows(self):
         """Summary means and count reflect only rows that were prompted."""
