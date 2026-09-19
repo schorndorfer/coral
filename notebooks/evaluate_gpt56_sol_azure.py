@@ -131,12 +131,19 @@ def _(data_path, mo, pd):
 def _(load_azure_settings, mo, os):
     azure_key = os.getenv("AZURE_OPENAI_API_KEY", "")
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+    azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
+    azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "")
     if azure_key.strip() and azure_endpoint.strip():
+        azure_environment = {
+            "AZURE_OPENAI_API_KEY": azure_key,
+            "AZURE_OPENAI_ENDPOINT": azure_endpoint,
+        }
+        if azure_deployment.strip():
+            azure_environment["AZURE_OPENAI_DEPLOYMENT"] = azure_deployment
+        if azure_api_version.strip():
+            azure_environment["AZURE_OPENAI_API_VERSION"] = azure_api_version
         settings = load_azure_settings(
-            {
-                "AZURE_OPENAI_API_KEY": azure_key,
-                "AZURE_OPENAI_ENDPOINT": azure_endpoint,
-            }
+            azure_environment
         )
         endpoint_host = settings.endpoint.split("//", maxsplit=1)[-1].split("/", maxsplit=1)[0]
         configuration_message = mo.md(
@@ -209,12 +216,17 @@ def _(Usage, estimate_cost, input_limit, input_rows, math, mo, output_token_ceil
     projected_cost = estimate_cost(
         Usage(estimated_input_tokens, len(preview_rows) * int(output_token_ceiling.value or 512))
     )
-    mo.md(
-        f"### Data preview and upper-bound projection\n"
-        f"Previewing **{len(preview_rows)}** rows (maximum 515). At the current token "
-        f"ceiling, the conservative upper-bound request cost is **${projected_cost:.4f}**."
+    projection_display = mo.vstack(
+        [
+            mo.md(
+                f"### Data preview and upper-bound projection\n"
+                f"Previewing **{len(preview_rows)}** rows (maximum 515). At the current token "
+                f"ceiling, the conservative upper-bound request cost is **${projected_cost:.4f}**."
+            ),
+            preview_rows.head(8),
+        ]
     )
-    preview_rows.head(8)
+    projection_display
     return (preview_rows,)
 
 

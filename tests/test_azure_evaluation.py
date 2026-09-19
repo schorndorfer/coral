@@ -384,7 +384,10 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         self.assertIn('"marimo"', notebook)
         self.assertIn('"openai"', notebook)
         self.assertIn("AZURE_OPENAI_API_KEY", notebook)
+        self.assertIn("AZURE_OPENAI_DEPLOYMENT", notebook)
+        self.assertIn("AZURE_OPENAI_API_VERSION", notebook)
         self.assertIn("Run full 515-input evaluation", notebook)
+        self.assertIn("projection_display = mo.vstack", notebook)
         self.assertNotIn("OPENAI_API_KEY", notebook.replace("AZURE_OPENAI_API_KEY", ""))
 
 
