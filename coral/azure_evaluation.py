@@ -16,6 +16,7 @@ from coral import task_to_default_tuple_dict
 
 SOL_INPUT_PER_MILLION = 4.0
 SOL_OUTPUT_PER_MILLION = 20.0
+API_ENVELOPE_TOKEN_MARGIN = 256
 TERMINAL_STATUSES = {
     "valid",
     "valid_after_retry",
@@ -262,11 +263,12 @@ def _response_usage(response: object) -> Usage:
     return Usage(input_tokens, output_tokens)
 
 
-def _projected_cost(section_text: str, max_output_tokens: int) -> float:
+def _projected_cost(request_input: str, max_output_tokens: int) -> float:
     if max_output_tokens < 0:
         raise ValueError("max_output_tokens cannot be negative")
-    # A conservative, dependency-free token estimate for the preflight cap.
-    estimated_input_tokens = max(1, math.ceil(len(section_text) / 4))
+    # Input includes the exact prompt. This fixed margin covers Responses API
+    # framing plus the structured-output schema that is sent outside input.
+    estimated_input_tokens = max(1, math.ceil(len(request_input) / 4)) + API_ENVELOPE_TOKEN_MARGIN
     return estimate_cost(Usage(estimated_input_tokens, max_output_tokens))
 
 
@@ -323,12 +325,6 @@ def run_evaluation(
             results.append({**base, "validation_status": "skipped_on_resume"})
             continue
 
-        if not can_afford(spent, _projected_cost(section_text, max_output_tokens), spend_cap):
-            record = CheckpointRecord(**base, validation_status="spend_cap_reached")
-            append_checkpoint(checkpoint_path, record)
-            results.append(asdict(record))
-            break
-
         prompt, response_format = build_request(row)
         attempts: list[str] = []
         input_tokens = 0
@@ -340,8 +336,14 @@ def run_evaluation(
         error: str | None = None
         stop_due_cap = False
         for attempt_number in range(2):
-            if attempt_number and not can_afford(
-                spent, _projected_cost(section_text, max_output_tokens), spend_cap
+            request_input = prompt
+            if attempt_number:
+                request_input = (
+                    f"{prompt}\n\nYour previous response was invalid: {error}. "
+                    "Correct it and return only schema-compliant JSON."
+                )
+            if not can_afford(
+                spent, _projected_cost(request_input, max_output_tokens), spend_cap
             ):
                 record = CheckpointRecord(
                     **base, validation_status="spend_cap_reached", output_text=output_text,
@@ -349,15 +351,10 @@ def run_evaluation(
                     elapsed_seconds=time.perf_counter() - started, raw_attempts=attempts,
                 )
                 append_checkpoint(checkpoint_path, record)
+                completed.add(key)
                 results.append(asdict(record))
                 stop_due_cap = True
                 break
-            request_input = prompt
-            if attempt_number:
-                request_input = (
-                    f"{prompt}\n\nYour previous response was invalid: {error}. "
-                    "Correct it and return only schema-compliant JSON."
-                )
             try:
                 response = client.responses.create(
                     model=settings.deployment,
@@ -375,6 +372,7 @@ def run_evaluation(
                     elapsed_seconds=elapsed, raw_attempts=attempts,
                 )
                 append_checkpoint(checkpoint_path, record)
+                completed.add(key)
                 results.append(asdict(record))
                 break
             try:
@@ -400,6 +398,7 @@ def run_evaluation(
                     elapsed_seconds=elapsed, raw_attempts=attempts,
                 )
                 append_checkpoint(checkpoint_path, record)
+                completed.add(key)
                 results.append(asdict(record))
                 break
             else:
@@ -411,6 +410,7 @@ def run_evaluation(
                     elapsed_seconds=time.perf_counter() - started, raw_attempts=attempts,
                 )
                 append_checkpoint(checkpoint_path, record)
+                completed.add(key)
                 results.append(asdict(record))
                 break
         if stop_due_cap:

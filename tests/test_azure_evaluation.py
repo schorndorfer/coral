@@ -129,11 +129,28 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         )
         self.assertEqual(result.iloc[0].validation_status, "spend_cap_reached")
 
+    def test_runner_cap_uses_full_initial_prompt_not_section_alone(self):
+        """Prompt/schema overhead blocks a request that section-only math admits."""
+        result = run_evaluation(
+            ONE_ROW, FakeClient.fail_if_called(), SETTINGS,
+            self.checkpoint, 0.0105, 512, "low",
+        )
+        self.assertEqual(result.iloc[0].validation_status, "spend_cap_reached")
+
+    def test_runner_cap_uses_full_corrective_prompt_before_retry(self):
+        """Retry-only corrective text counts toward the next request's cap."""
+        client = FakeClient.sequence(["not-json", VALID_SYMPTOM_JSON])
+        result = run_evaluation(
+            ONE_ROW, client, SETTINGS, self.checkpoint, 0.012, 512, "low",
+        )
+        self.assertEqual(result.iloc[0].validation_status, "spend_cap_reached")
+        self.assertEqual(client.calls, 1)
+
     def test_runner_respects_cap_before_retrying_invalid_result(self):
         """A retry is not sent when its worst-case cost would exceed the cap."""
         client = FakeClient.sequence(["not-json", VALID_SYMPTOM_JSON])
         result = run_evaluation(
-            ONE_ROW, client, SETTINGS, self.checkpoint, 0.011, 512, "low",
+            ONE_ROW, client, SETTINGS, self.checkpoint, 0.012, 512, "low",
         )
         self.assertEqual(result.iloc[0].validation_status, "spend_cap_reached")
         self.assertEqual(client.calls, 1)
@@ -148,6 +165,18 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
             self.checkpoint, 1.0, 512, "low",
         )
         self.assertEqual(result.iloc[0].validation_status, "skipped_on_resume")
+
+    def test_runner_skips_duplicate_key_in_same_run(self):
+        """A repeated identity is skipped after its first terminal checkpoint."""
+        client = FakeClient(VALID_SYMPTOM_JSON, 100, 20)
+        result = run_evaluation(
+            pd.concat([ONE_ROW, ONE_ROW], ignore_index=True),
+            client, SETTINGS,
+            self.checkpoint, 1.0, 512, "low",
+        )
+        self.assertEqual(result.iloc[0].validation_status, "valid")
+        self.assertEqual(result.iloc[1].validation_status, "skipped_on_resume")
+        self.assertEqual(client.calls, 1)
 
     def test_runner_records_api_failure_without_exception_details(self):
         """A client exception produces a safe terminal checkpoint row."""
