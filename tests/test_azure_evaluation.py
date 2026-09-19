@@ -19,6 +19,8 @@ from coral.azure_evaluation import (
     terminal_keys,
     to_legacy_output,
     validate_response,
+    write_legacy_csv,
+    write_observed_summary,
 )
 
 
@@ -41,6 +43,31 @@ ONE_ROW = pd.DataFrame([{
     "task": "symptoms",
     "section_text": "The appetite is low.",
 }])
+VALID_RECORD = {
+    "doc_idx": "1",
+    "section_name": "hpi",
+    "section_text": "The appetite is low.",
+    "task": "symptoms",
+    "validation_status": "valid",
+    "parsed_records": [{
+        "symptom": "low appetite",
+        "datetimes": ["unknown"],
+        "evidence_quotes": ["appetite is low"],
+    }],
+    "api_key": "must-not-be-exported",
+}
+SCORES_WITH_ONE_REAL_AND_ONE_SYNTHETIC_ROW = pd.DataFrame([
+    {
+        "doc_idx": "1", "section_name": "hpi", "task": "symptoms",
+        "subrelation": "Symptom", "bleu4": 0.8, "rouge1": 0.7,
+        "em_prec": 1.0, "em_recall": 0.5, "em_f1": 2 / 3,
+    },
+    {
+        "doc_idx": "999", "section_name": "hpi", "task": "symptoms",
+        "subrelation": "Symptom", "bleu4": 0.0, "rouge1": 0.0,
+        "em_prec": 0.0, "em_recall": 0.0, "em_f1": 0.0,
+    },
+])
 SETTINGS = AzureSettings("test-key", "https://example.openai.azure.com")
 
 
@@ -96,6 +123,8 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.checkpoint = Path(self.temporary_directory.name) / "checkpoints.jsonl"
+        self.legacy_path = Path(self.temporary_directory.name) / "legacy.csv"
+        self.summary_path = Path(self.temporary_directory.name) / "summary.csv"
 
     def tearDown(self):
         self.temporary_directory.cleanup()
@@ -110,6 +139,30 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         self.assertEqual(result.iloc[0].input_tokens, 100)
         checkpoint = json.loads(self.checkpoint.read_text())
         self.assertEqual(checkpoint["output_tokens"], 20)
+
+    def test_write_legacy_csv_excludes_failed_records(self):
+        """Only validated records become legacy scorer inputs."""
+        frame = write_legacy_csv(
+            [VALID_RECORD, {**VALID_RECORD, "validation_status": "validation_failed"}],
+            self.legacy_path,
+            "gpt-5.6-sol",
+        )
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(frame.iloc[0].conversion_status, "validated")
+        self.assertEqual(
+            list(frame.columns),
+            ["doc_idx", "section_name", "section_text", "task", "model", "output", "conversion_status"],
+        )
+        self.assertNotIn("must-not-be-exported", self.legacy_path.read_text())
+
+    def test_observed_summary_excludes_synthetic_cartesian_rows(self):
+        """Summary means and count reflect only rows that were prompted."""
+        summary = write_observed_summary(
+            SCORES_WITH_ONE_REAL_AND_ONE_SYNTHETIC_ROW, ONE_ROW, self.summary_path,
+        )
+        self.assertEqual(summary.iloc[0].n_examples, 1)
+        self.assertEqual(summary.iloc[0].mean_bleu4, 0.8)
+        self.assertEqual(summary.iloc[0].mean_em_f1, 2 / 3)
 
     def test_runner_retries_once_then_marks_valid_after_retry(self):
         """A malformed first result gets one corrective retry."""

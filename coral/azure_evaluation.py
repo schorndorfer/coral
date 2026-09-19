@@ -7,7 +7,7 @@ import math
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 import pandas as pd
@@ -184,6 +184,64 @@ def to_legacy_output(task: str, records: list[dict[str, object]]) -> str:
             values.append(f"{tuple_field}={serialized}")
         rendered_records.append(f"{type(default).__name__}({', '.join(values)})")
     return ", ".join(rendered_records)
+
+
+_LEGACY_CSV_COLUMNS = (
+    "doc_idx", "section_name", "section_text", "task", "model", "output",
+    "conversion_status",
+)
+_OBSERVED_SCORE_KEYS = ("doc_idx", "section_name", "task")
+
+
+def write_legacy_csv(
+    records: Iterable[dict[str, object]], path: Path, model: str,
+) -> pd.DataFrame:
+    """Write accepted Azure responses in the legacy scorer's exact input shape."""
+    legacy_rows: list[dict[str, object]] = []
+    for record in records:
+        if record.get("validation_status") not in {"valid", "valid_after_retry"}:
+            continue
+        parsed_records = record.get("parsed_records")
+        if (
+            not isinstance(parsed_records, list)
+            or not all(isinstance(parsed_record, dict) for parsed_record in parsed_records)
+        ):
+            raise ValueError("validated record must include parsed_records")
+        task = record.get("task")
+        if not isinstance(task, str):
+            raise ValueError("validated record must include task")
+        legacy_rows.append({
+            "doc_idx": record.get("doc_idx", ""),
+            "section_name": record.get("section_name", ""),
+            "section_text": record.get("section_text", ""),
+            "task": task,
+            "model": model,
+            "output": to_legacy_output(task, parsed_records),
+            "conversion_status": "validated",
+        })
+    frame = pd.DataFrame(legacy_rows, columns=_LEGACY_CSV_COLUMNS)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path, index=False)
+    return frame
+
+
+def write_observed_summary(
+    instance_scores: pd.DataFrame, input_rows: pd.DataFrame, path: Path,
+) -> pd.DataFrame:
+    """Aggregate scorer metrics only for document sections actually prompted."""
+    input_keys = input_rows.loc[:, _OBSERVED_SCORE_KEYS].drop_duplicates()
+    observed = instance_scores.merge(input_keys, on=list(_OBSERVED_SCORE_KEYS), how="inner")
+    summary = observed.groupby(["task", "subrelation"], as_index=False).agg(
+        n_examples=("doc_idx", "size"),
+        mean_bleu4=("bleu4", "mean"),
+        mean_rouge1=("rouge1", "mean"),
+        mean_em_prec=("em_prec", "mean"),
+        mean_em_recall=("em_recall", "mean"),
+        mean_em_f1=("em_f1", "mean"),
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    summary.to_csv(path, index=False)
+    return summary
 
 
 @dataclass(frozen=True, repr=False)
