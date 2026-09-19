@@ -3,8 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 from coral.utils.dataprocessing import parse_output
 from coral.azure_evaluation import (
+    AzureSettings,
     CheckpointRecord,
     Usage,
     append_checkpoint,
@@ -12,6 +15,7 @@ from coral.azure_evaluation import (
     can_afford,
     estimate_cost,
     load_azure_settings,
+    run_evaluation,
     terminal_keys,
     to_legacy_output,
     validate_response,
@@ -31,8 +35,138 @@ VALID_SYMPTOM_JSON = json.dumps(
     }
 )
 
+ONE_ROW = pd.DataFrame([{
+    "doc_idx": "1",
+    "section_name": "hpi",
+    "task": "symptoms",
+    "section_text": "The appetite is low.",
+}])
+SETTINGS = AzureSettings("test-key", "https://example.openai.azure.com")
+
+
+class FakeResponse:
+    def __init__(self, output_text, input_tokens=0, output_tokens=0):
+        self.output_text = output_text
+        self.usage = type(
+            "Usage", (), {"input_tokens": input_tokens, "output_tokens": output_tokens}
+        )()
+
+
+class FakeResponses:
+    def __init__(self, responses, fail_if_called=False):
+        self._responses = iter(responses)
+        self._fail_if_called = fail_if_called
+        self.calls = 0
+
+    def create(self, **kwargs):
+        self.calls += 1
+        if self._fail_if_called:
+            raise AssertionError("client must not be called")
+        response = next(self._responses)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+class FakeClient:
+    def __init__(self, output_text, input_tokens=0, output_tokens=0):
+        self.responses = FakeResponses([FakeResponse(output_text, input_tokens, output_tokens)])
+
+    @property
+    def calls(self):
+        return self.responses.calls
+
+    @classmethod
+    def sequence(cls, output_texts):
+        client = cls.__new__(cls)
+        client.responses = FakeResponses([
+            text if isinstance(text, BaseException) else FakeResponse(text, 100, 20)
+            for text in output_texts
+        ])
+        return client
+
+    @classmethod
+    def fail_if_called(cls):
+        client = cls.__new__(cls)
+        client.responses = FakeResponses([], fail_if_called=True)
+        return client
+
 
 class AzureEvaluationHelpersTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.checkpoint = Path(self.temporary_directory.name) / "checkpoints.jsonl"
+
+    def tearDown(self):
+        self.temporary_directory.cleanup()
+
+    def test_runner_checkpoints_valid_usage(self):
+        """A valid model result is persisted with its real usage."""
+        result = run_evaluation(
+            ONE_ROW, FakeClient(VALID_SYMPTOM_JSON, 100, 20), SETTINGS,
+            self.checkpoint, 1.0, 512, "low",
+        )
+        self.assertEqual(result.iloc[0].validation_status, "valid")
+        self.assertEqual(result.iloc[0].input_tokens, 100)
+        checkpoint = json.loads(self.checkpoint.read_text())
+        self.assertEqual(checkpoint["output_tokens"], 20)
+
+    def test_runner_retries_once_then_marks_valid_after_retry(self):
+        """A malformed first result gets one corrective retry."""
+        client = FakeClient.sequence(["not-json", VALID_SYMPTOM_JSON])
+        result = run_evaluation(
+            ONE_ROW, client, SETTINGS, self.checkpoint, 1.0, 512, "low",
+        )
+        self.assertEqual(result.iloc[0].validation_status, "valid_after_retry")
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(len(result.iloc[0].raw_attempts), 2)
+
+    def test_runner_respects_cap_before_making_request(self):
+        """A zero cap prevents a network request and is checkpointed."""
+        result = run_evaluation(
+            ONE_ROW, FakeClient.fail_if_called(), SETTINGS,
+            self.checkpoint, 0.0, 512, "low",
+        )
+        self.assertEqual(result.iloc[0].validation_status, "spend_cap_reached")
+
+    def test_runner_respects_cap_before_retrying_invalid_result(self):
+        """A retry is not sent when its worst-case cost would exceed the cap."""
+        client = FakeClient.sequence(["not-json", VALID_SYMPTOM_JSON])
+        result = run_evaluation(
+            ONE_ROW, client, SETTINGS, self.checkpoint, 0.011, 512, "low",
+        )
+        self.assertEqual(result.iloc[0].validation_status, "spend_cap_reached")
+        self.assertEqual(client.calls, 1)
+
+    def test_runner_skips_terminal_checkpoint_without_calling_client(self):
+        """A terminal checkpoint identifies a completed row during resume."""
+        append_checkpoint(self.checkpoint, CheckpointRecord(
+            "1", "hpi", "symptoms", SETTINGS.deployment, "valid",
+        ))
+        result = run_evaluation(
+            ONE_ROW, FakeClient.fail_if_called(), SETTINGS,
+            self.checkpoint, 1.0, 512, "low",
+        )
+        self.assertEqual(result.iloc[0].validation_status, "skipped_on_resume")
+
+    def test_runner_records_api_failure_without_exception_details(self):
+        """A client exception produces a safe terminal checkpoint row."""
+        client = FakeClient.sequence([RuntimeError("connection unavailable")])
+        result = run_evaluation(
+            ONE_ROW, client, SETTINGS, self.checkpoint, 1.0, 512, "low",
+        )
+        self.assertEqual(result.iloc[0].validation_status, "api_failed")
+        self.assertEqual(result.iloc[0].error, "RuntimeError: connection unavailable")
+
+    def test_runner_treats_client_value_error_as_api_failure(self):
+        """A ValueError raised by the injected client is not a validation retry."""
+        result = run_evaluation(
+            ONE_ROW, FakeClient.sequence([ValueError("request rejected")]), SETTINGS,
+            self.checkpoint, 1.0, 512, "low",
+        )
+        self.assertEqual(result.iloc[0].validation_status, "api_failed")
+        self.assertEqual(result.iloc[0].error, "ValueError: request rejected")
+
     def test_validate_response_requires_verbatim_evidence(self):
         raw = json.dumps({"task": "symptoms", "records": [{
             "symptom": "low appetite", "datetimes": ["unknown"],

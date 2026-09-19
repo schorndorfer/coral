@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 from urllib.parse import urlsplit, urlunsplit
+
+import pandas as pd
 
 from coral import task_to_default_tuple_dict
 
@@ -221,6 +225,197 @@ class CheckpointRecord:
     cost: float | None = None
     elapsed_seconds: float | None = None
     raw_attempts: list[str] | None = None
+
+
+class ResponsesAPI(Protocol):
+    def create(self, **kwargs: object) -> object: ...
+
+
+class ResponseClient(Protocol):
+    """The small Responses API surface the evaluation runner needs."""
+
+    responses: ResponsesAPI
+
+
+def _response_text(response: object) -> str:
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str):
+        return output_text
+    if isinstance(response, Mapping):
+        output_text = response.get("output_text")
+        if isinstance(output_text, str):
+            return output_text
+    raise ValueError("response did not include output_text")
+
+
+def _response_usage(response: object) -> Usage:
+    usage = getattr(response, "usage", None)
+    if isinstance(response, Mapping):
+        usage = response.get("usage", usage)
+    input_tokens = getattr(usage, "input_tokens", None)
+    output_tokens = getattr(usage, "output_tokens", None)
+    if isinstance(usage, Mapping):
+        input_tokens = usage.get("input_tokens", input_tokens)
+        output_tokens = usage.get("output_tokens", output_tokens)
+    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        raise ValueError("response usage must include integer input_tokens and output_tokens")
+    return Usage(input_tokens, output_tokens)
+
+
+def _projected_cost(section_text: str, max_output_tokens: int) -> float:
+    if max_output_tokens < 0:
+        raise ValueError("max_output_tokens cannot be negative")
+    # A conservative, dependency-free token estimate for the preflight cap.
+    estimated_input_tokens = max(1, math.ceil(len(section_text) / 4))
+    return estimate_cost(Usage(estimated_input_tokens, max_output_tokens))
+
+
+def _checkpoint_spend(path: Path) -> float:
+    if not path.exists():
+        return 0.0
+    spent = 0.0
+    with path.open(encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            cost = record.get("cost") if isinstance(record, dict) else None
+            if isinstance(cost, (int, float)) and cost >= 0:
+                spent += cost
+    return spent
+
+
+def _row_value(row: Mapping[str, Any], name: str) -> str:
+    value = row.get(name, "")
+    return value if isinstance(value, str) else str(value)
+
+
+def run_evaluation(
+    rows: pd.DataFrame,
+    client: ResponseClient,
+    settings: AzureSettings,
+    checkpoint_path: Path,
+    spend_cap: float,
+    max_output_tokens: int,
+    reasoning_effort: str,
+) -> pd.DataFrame:
+    """Run rows serially, checkpointing every terminal outcome for safe resume."""
+    if spend_cap < 0:
+        raise ValueError("spend_cap cannot be negative")
+    completed = terminal_keys(checkpoint_path)
+    spent = _checkpoint_spend(checkpoint_path)
+    results: list[dict[str, Any]] = []
+
+    for row in rows.to_dict("records"):
+        doc_idx = _row_value(row, "doc_idx")
+        section_name = _row_value(row, "section_name")
+        task = _row_value(row, "task")
+        section_text = _row_value(row, "section_text")
+        key = (doc_idx, section_name, task, settings.deployment)
+        base = {
+            "doc_idx": doc_idx,
+            "section_name": section_name,
+            "task": task,
+            "model": settings.deployment,
+        }
+        if key in completed:
+            results.append({**base, "validation_status": "skipped_on_resume"})
+            continue
+
+        if not can_afford(spent, _projected_cost(section_text, max_output_tokens), spend_cap):
+            record = CheckpointRecord(**base, validation_status="spend_cap_reached")
+            append_checkpoint(checkpoint_path, record)
+            results.append(asdict(record))
+            break
+
+        prompt, response_format = build_request(row)
+        attempts: list[str] = []
+        input_tokens = 0
+        output_tokens = 0
+        attempt_cost = 0.0
+        output_text: str | None = None
+        parsed_records: list[dict[str, object]] | None = None
+        started = time.perf_counter()
+        error: str | None = None
+        stop_due_cap = False
+        for attempt_number in range(2):
+            if attempt_number and not can_afford(
+                spent, _projected_cost(section_text, max_output_tokens), spend_cap
+            ):
+                record = CheckpointRecord(
+                    **base, validation_status="spend_cap_reached", output_text=output_text,
+                    input_tokens=input_tokens, output_tokens=output_tokens, cost=attempt_cost,
+                    elapsed_seconds=time.perf_counter() - started, raw_attempts=attempts,
+                )
+                append_checkpoint(checkpoint_path, record)
+                results.append(asdict(record))
+                stop_due_cap = True
+                break
+            request_input = prompt
+            if attempt_number:
+                request_input = (
+                    f"{prompt}\n\nYour previous response was invalid: {error}. "
+                    "Correct it and return only schema-compliant JSON."
+                )
+            try:
+                response = client.responses.create(
+                    model=settings.deployment,
+                    input=request_input,
+                    reasoning={"effort": reasoning_effort},
+                    max_output_tokens=max_output_tokens,
+                    text={"format": response_format},
+                )
+            except Exception as exception:  # External client failures are terminal and safe to resume.
+                elapsed = time.perf_counter() - started
+                record = CheckpointRecord(
+                    **base, validation_status="api_failed",
+                    error=f"{type(exception).__name__}: {exception}",
+                    input_tokens=input_tokens, output_tokens=output_tokens, cost=attempt_cost,
+                    elapsed_seconds=elapsed, raw_attempts=attempts,
+                )
+                append_checkpoint(checkpoint_path, record)
+                results.append(asdict(record))
+                break
+            try:
+                raw = _response_text(response)
+                attempts.append(raw)
+                output_text = raw
+                usage = _response_usage(response)
+                input_tokens += usage.input_tokens
+                output_tokens += usage.output_tokens
+                cost = estimate_cost(usage)
+                attempt_cost += cost
+                spent += cost
+                parsed_records = validate_response(task, section_text, raw)
+            except ValueError as validation_error:
+                error = str(validation_error)
+                if attempt_number == 0:
+                    continue
+                elapsed = time.perf_counter() - started
+                record = CheckpointRecord(
+                    **base, validation_status="validation_failed", error=error,
+                    output_text=output_text, input_tokens=input_tokens,
+                    output_tokens=output_tokens, cost=attempt_cost,
+                    elapsed_seconds=elapsed, raw_attempts=attempts,
+                )
+                append_checkpoint(checkpoint_path, record)
+                results.append(asdict(record))
+                break
+            else:
+                record = CheckpointRecord(
+                    **base,
+                    validation_status="valid" if attempt_number == 0 else "valid_after_retry",
+                    output_text=output_text, parsed_records=parsed_records,
+                    input_tokens=input_tokens, output_tokens=output_tokens, cost=attempt_cost,
+                    elapsed_seconds=time.perf_counter() - started, raw_attempts=attempts,
+                )
+                append_checkpoint(checkpoint_path, record)
+                results.append(asdict(record))
+                break
+        if stop_due_cap:
+            break
+    return pd.DataFrame(results)
 
 
 def load_azure_settings(env: Mapping[str, str]) -> AzureSettings:
