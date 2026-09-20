@@ -293,13 +293,17 @@ def _(
     elif run_requested:
         # The Azure client exists only inside this explicit run branch. In script
         # mode that branch requires CORAL_AZURE_RUN=1.
-        from openai import AzureOpenAI
+        from openai import AzureOpenAI, OpenAI
 
-        client = AzureOpenAI(
-            api_key=settings.api_key,
-            azure_endpoint=settings.endpoint,
-            api_version=settings.api_version,
-        )
+        if settings.endpoint.lower().endswith(".services.ai.azure.com/openai/v1"):
+            # Azure AI Foundry provides this OpenAI-compatible v1 base URL.
+            client = OpenAI(base_url=settings.endpoint, api_key=settings.api_key)
+        else:
+            client = AzureOpenAI(
+                api_key=settings.api_key,
+                azure_endpoint=settings.endpoint,
+                api_version=settings.api_version,
+            )
         run_results = run_evaluation(
             run_rows,
             client,

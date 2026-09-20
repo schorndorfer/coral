@@ -379,6 +379,18 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         )
         self.assertEqual(settings.endpoint, "https://example.openai.azure.com")
 
+    def test_load_azure_settings_preserves_foundry_v1_api_base(self):
+        settings = load_azure_settings(
+            {
+                "AZURE_OPENAI_API_KEY": "secret",
+                "AZURE_OPENAI_ENDPOINT": "https://example.services.ai.azure.com/openai/v1",
+            }
+        )
+        self.assertEqual(
+            settings.endpoint,
+            "https://example.services.ai.azure.com/openai/v1",
+        )
+
     def test_load_azure_settings_rejects_missing_key(self):
         with self.assertRaisesRegex(ValueError, "AZURE_OPENAI_API_KEY"):
             load_azure_settings({"AZURE_OPENAI_ENDPOINT": "https://example"})
@@ -435,6 +447,8 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         self.assertIn("projection_display = mo.vstack", notebook)
         self.assertIn("exported_keys = legacy_frame.loc[:, [\"doc_idx\", \"section_name\", \"task\"]]", notebook)
         self.assertIn("except json.JSONDecodeError:", notebook)
+        self.assertIn("from openai import AzureOpenAI, OpenAI", notebook)
+        self.assertIn("base_url=settings.endpoint", notebook)
         self.assertNotIn("OPENAI_API_KEY", notebook.replace("AZURE_OPENAI_API_KEY", ""))
 
 
