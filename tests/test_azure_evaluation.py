@@ -230,6 +230,21 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         self.assertEqual(client.calls, 2)
         self.assertEqual(len(result.iloc[0].raw_attempts), 2)
 
+    def test_runner_reports_start_and_terminal_progress_for_each_row(self):
+        messages: list[str] = []
+        run_evaluation(
+            ONE_ROW,
+            FakeClient(VALID_SYMPTOM_JSON, 100, 20),
+            SETTINGS,
+            self.checkpoint,
+            1.0,
+            512,
+            "low",
+            progress=messages.append,
+        )
+        self.assertEqual(messages[0], "Starting 1/1: doc 1, hpi, symptoms")
+        self.assertEqual(messages[-1], "Finished 1/1: valid")
+
     def test_runner_respects_cap_before_making_request(self):
         """A zero cap prevents a network request and is checkpointed."""
         result = run_evaluation(
@@ -449,6 +464,7 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         self.assertIn("except json.JSONDecodeError:", notebook)
         self.assertIn("from openai import AzureOpenAI, OpenAI", notebook)
         self.assertIn("base_url=settings.endpoint", notebook)
+        self.assertIn("progress=print if is_script_mode else None", notebook)
         self.assertNotIn("OPENAI_API_KEY", notebook.replace("AZURE_OPENAI_API_KEY", ""))
 
 

@@ -293,6 +293,11 @@ def _(
     elif run_requested:
         # The Azure client exists only inside this explicit run branch. In script
         # mode that branch requires CORAL_AZURE_RUN=1.
+        if is_script_mode:
+            print(
+                f"Starting {run_label}: {len(run_rows)} input(s), deployment "
+                f"{settings.deployment}, spend cap ${float(spend_cap.value or 0):.2f}."
+            )
         from openai import AzureOpenAI, OpenAI
 
         if settings.endpoint.lower().endswith(".services.ai.azure.com/openai/v1"):
@@ -312,7 +317,11 @@ def _(
             float(spend_cap.value or 0),
             int(output_token_ceiling.value or 512),
             str(reasoning_effort.value),
+            progress=print if is_script_mode else None,
         )
+        if is_script_mode:
+            _script_status_counts = run_results["validation_status"].value_counts().to_dict()
+            print(f"Completed {run_label}: {_script_status_counts}. Checkpoint: {checkpoint_path}")
         run_message = mo.md(f"Completed **{run_label}**. Checkpoint: `{checkpoint_path}`.")
     else:
         run_results = pd.DataFrame()

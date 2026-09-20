@@ -7,7 +7,7 @@ import math
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 import pandas as pd
@@ -363,6 +363,7 @@ def run_evaluation(
     spend_cap: float,
     max_output_tokens: int,
     reasoning_effort: str,
+    progress: Callable[[str], None] | None = None,
 ) -> pd.DataFrame:
     """Run rows serially, checkpointing every terminal outcome for safe resume."""
     if spend_cap < 0:
@@ -371,7 +372,8 @@ def run_evaluation(
     spent = _checkpoint_spend(checkpoint_path)
     results: list[dict[str, Any]] = []
 
-    for row in rows.to_dict("records"):
+    total_rows = len(rows)
+    for row_number, row in enumerate(rows.to_dict("records"), start=1):
         doc_idx = _row_value(row, "doc_idx")
         section_name = _row_value(row, "section_name")
         task = _row_value(row, "task")
@@ -384,8 +386,12 @@ def run_evaluation(
             "task": task,
             "model": settings.deployment,
         }
+        if progress is not None:
+            progress(f"Starting {row_number}/{total_rows}: doc {doc_idx}, {section_name}, {task}")
         if key in completed:
             results.append({**base, "validation_status": "skipped_on_resume"})
+            if progress is not None:
+                progress(f"Finished {row_number}/{total_rows}: skipped_on_resume")
             continue
 
         prompt, response_format = build_request(row)
@@ -477,7 +483,11 @@ def run_evaluation(
                 results.append(asdict(record))
                 break
         if stop_due_cap:
+            if progress is not None:
+                progress(f"Finished {row_number}/{total_rows}: spend_cap_reached")
             break
+        if progress is not None:
+            progress(f"Finished {row_number}/{total_rows}: {results[-1]['validation_status']}")
     return pd.DataFrame(results)
 
 
