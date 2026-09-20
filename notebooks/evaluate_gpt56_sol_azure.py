@@ -1,11 +1,17 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
+#     "absl-py",
+#     "evaluate",
 #     "marimo",
+#     "nltk",
 #     "openai",
 #     "pandas",
 #     "pydantic",
+#     "rouge-score",
+#     "scikit-learn",
 #     "torch",
+#     "transformers",
 # ]
 # ///
 
