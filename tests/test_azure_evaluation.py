@@ -455,6 +455,7 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         notebook = Path("notebooks/evaluate_gpt56_sol_azure.py").read_text()
         self.assertIn('"marimo"', notebook)
         self.assertIn('"openai"', notebook)
+        self.assertIn('"torch"', notebook)
         self.assertIn("AZURE_OPENAI_API_KEY", notebook)
         self.assertIn("AZURE_OPENAI_DEPLOYMENT", notebook)
         self.assertIn("AZURE_OPENAI_API_VERSION", notebook)

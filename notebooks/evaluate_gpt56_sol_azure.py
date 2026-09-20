@@ -5,6 +5,7 @@
 #     "openai",
 #     "pandas",
 #     "pydantic",
+#     "torch",
 # ]
 # ///
 
