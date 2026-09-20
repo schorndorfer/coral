@@ -370,6 +370,15 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         self.assertEqual(settings.deployment, "gpt-5.6-sol")
         self.assertEqual(settings.endpoint, "https://example.openai.azure.com")
 
+    def test_load_azure_settings_normalizes_a_v1_api_base_to_resource_root(self):
+        settings = load_azure_settings(
+            {
+                "AZURE_OPENAI_API_KEY": "secret",
+                "AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com/openai/v1",
+            }
+        )
+        self.assertEqual(settings.endpoint, "https://example.openai.azure.com")
+
     def test_load_azure_settings_rejects_missing_key(self):
         with self.assertRaisesRegex(ValueError, "AZURE_OPENAI_API_KEY"):
             load_azure_settings({"AZURE_OPENAI_ENDPOINT": "https://example"})

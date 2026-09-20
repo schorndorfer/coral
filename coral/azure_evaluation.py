@@ -492,7 +492,13 @@ def load_azure_settings(env: Mapping[str, str]) -> AzureSettings:
     parsed = urlsplit(endpoint.strip())
     if not parsed.scheme or not parsed.netloc:
         raise ValueError("AZURE_OPENAI_ENDPOINT must be an absolute URL")
-    endpoint = urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    endpoint_path = parsed.path.rstrip("/")
+    # AzureOpenAI's ``azure_endpoint`` is the resource root. Foundry also
+    # displays an OpenAI-compatible ``/openai/v1`` API base, so accept that
+    # convenient form without producing a doubled API path in client calls.
+    if endpoint_path == "/openai/v1":
+        endpoint_path = ""
+    endpoint = urlunsplit((parsed.scheme, parsed.netloc, endpoint_path, "", ""))
     deployment = env.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5.6-sol").strip()
     api_version = env.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview").strip()
     if not deployment:
