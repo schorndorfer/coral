@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coral-oncology"
+version = "0.1.0"
+description = "Benchmarking and local exploration tools for the CORAL oncology dataset"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "CC-BY-NC-SA-4.0"
+license-files = ["LICENSE.md"]
+dependencies = [
+    "absl-py>=2.1",
+    "accelerate>=1.0",
+    "ai2-olmo>=0.6",
+    "bitsandbytes>=0.43; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "evaluate>=0.4",
+    "huggingface-hub>=0.25",
+    "marimo>=0.24.2",
+    "nltk>=3.9",
+    "numpy>=1.26",
+    "openai>=1.66",
+    "pandas>=2.2",
+    "pydantic>=2.0",
+    "rouge-score>=0.1.2",
+    "scikit-learn>=1.4",
+    "sentencepiece>=0.2",
+    "streamlit>=1.39",
+    "torch>=2.2",
+    "transformers>=4.45",
+]
+
+[project.urls]
+Repository = "https://github.com/MadhumitaSushil/coral"
+Paper = "https://doi.org/10.1056/AIdbp2300110"
+
+[tool.setuptools.packages.find]
+include = ["coral*"]
