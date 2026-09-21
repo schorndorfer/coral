@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 import math
 import time
@@ -197,6 +199,14 @@ _LEGACY_CSV_COLUMNS = (
     "conversion_status",
 )
 _OBSERVED_SCORE_KEYS = ("doc_idx", "section_name", "task")
+
+
+def call_without_stdout(
+    operation: Callable[..., Any], *args: object, **kwargs: object,
+) -> Any:
+    """Run a noisy legacy operation without forwarding its stdout."""
+    with redirect_stdout(StringIO()):
+        return operation(*args, **kwargs)
 
 
 def write_legacy_csv(

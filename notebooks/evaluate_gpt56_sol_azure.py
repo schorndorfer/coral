@@ -58,6 +58,7 @@ def _():
     from coral.azure_evaluation import (
         Usage,
         build_paper_comparison,
+        call_without_stdout,
         estimate_cost,
         load_azure_settings,
         run_evaluation,
@@ -69,6 +70,7 @@ def _():
         Path,
         Usage,
         build_paper_comparison,
+        call_without_stdout,
         estimate_cost,
         json,
         load_azure_settings,
@@ -347,21 +349,18 @@ def _(mo, pd, run_results):
     if run_results.empty:
         results_display = mo.md("### Results\nNo evaluation results are available yet.")
     else:
-        status_counts = run_results["validation_status"].value_counts().rename_axis("status").reset_index(name="count")
+        status_counts = run_results["validation_status"].value_counts()
+        status_summary = ", ".join(
+            f"{status}: {count}" for status, count in status_counts.items()
+        )
         observed_cost = run_results.get("cost", pd.Series(dtype=float)).fillna(0).sum()
         observed_tokens = (
             run_results.get("input_tokens", pd.Series(dtype=float)).fillna(0).sum()
             + run_results.get("output_tokens", pd.Series(dtype=float)).fillna(0).sum()
         )
-        results_display = mo.vstack(
-            [
-                mo.md(
-                    f"### Results\nObserved Azure usage: **{int(observed_tokens)} tokens**; "
-                    f"observed cost: **${observed_cost:.4f}**."
-                ),
-                status_counts,
-                run_results[run_results["validation_status"].isin(["api_failed", "validation_failed"])],
-            ]
+        results_display = mo.md(
+            f"### Run summary\nObserved Azure usage: **{int(observed_tokens)} tokens**; "
+            f"observed cost: **${observed_cost:.4f}**. Statuses: {status_summary}."
         )
     results_display
     return
@@ -370,6 +369,7 @@ def _(mo, pd, run_results):
 @app.cell
 def _(
     aggregate_score_path,
+    call_without_stdout,
     checkpoint_path,
     instance_score_path,
     legacy_path,
@@ -397,9 +397,14 @@ def _(
         else:
             from coral.benchmarking.evaluate_model import evaluate, get_annots, get_outputs
 
-            scored_data = get_annots("coral_inference.csv", str(Path("data")))
-            scored_outputs = get_outputs(legacy_path.name, str(output_path))
-            evaluate(
+            scored_data = call_without_stdout(
+                get_annots, "coral_inference.csv", str(Path("data"))
+            )
+            scored_outputs = call_without_stdout(
+                get_outputs, legacy_path.name, str(output_path)
+            )
+            call_without_stdout(
+                evaluate,
                 scored_data,
                 scored_outputs,
                 instance_score_path.name,
@@ -432,12 +437,7 @@ def _(build_paper_comparison, mo, observed_summary_path, pd):
             score_summary_display = mo.vstack(
                 [
                     mo.md(
-                        "### Observed-only score summary\nThis excludes the legacy scorer's "
-                        "synthetic Cartesian-product rows."
-                    ),
-                    observed_summary,
-                    mo.md(
-                        "### Comparison with the paper\n"
+                        "### Top-line comparison with the paper\n"
                         "The CORAL paper's best-performing model was **GPT-4**: BLEU-4 "
                         "0.73, ROUGE-1 0.72, and EM F1 0.51 (Sushil et al., NEJM AI, "
                         "2024; doi:10.1056/AIdbp2300110). `difference_vs_paper` is the "
@@ -448,6 +448,9 @@ def _(build_paper_comparison, mo, observed_summary_path, pd):
                     paper_comparison,
                 ]
             )
+            if mo.app_meta().mode == "script":
+                print("Top-line comparison with the paper")
+                print(paper_comparison.to_string(index=False))
     else:
         score_summary_display = mo.md(
             "### Observed-only score summary\nNo observed-only summary has been produced yet."

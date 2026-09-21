@@ -1,4 +1,6 @@
 import ast
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 import tempfile
 import unittest
@@ -15,6 +17,7 @@ from coral.azure_evaluation import (
     build_paper_comparison,
     build_request,
     can_afford,
+    call_without_stdout,
     estimate_cost,
     load_azure_settings,
     run_evaluation,
@@ -130,6 +133,19 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
 
     def tearDown(self):
         self.temporary_directory.cleanup()
+
+    def test_call_without_stdout_returns_result_without_forwarding_noisy_output(self):
+        """Legacy scorer diagnostics must not flood the notebook or script output."""
+        def noisy_operation():
+            print("one row per individual score")
+            return "completed"
+
+        visible_output = StringIO()
+        with redirect_stdout(visible_output):
+            result = call_without_stdout(noisy_operation)
+
+        self.assertEqual(result, "completed")
+        self.assertEqual(visible_output.getvalue(), "")
 
     def test_runner_checkpoints_valid_usage(self):
         """A valid model result is persisted with its real usage."""
