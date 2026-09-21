@@ -12,6 +12,7 @@ from coral.azure_evaluation import (
     CheckpointRecord,
     Usage,
     append_checkpoint,
+    build_paper_comparison,
     build_request,
     can_afford,
     estimate_cost,
@@ -208,6 +209,20 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         )
         self.assertEqual(summary.iloc[0].n_examples, 1)
         self.assertEqual(summary.iloc[0].mean_bleu4, 0.8)
+
+    def test_paper_comparison_reports_observed_macro_and_absolute_difference(self):
+        """A comparison must use observed summary rows, not synthetic scorer output."""
+        observed_summary = pd.DataFrame([
+            {"mean_bleu4": 0.2, "mean_rouge1": 0.4, "mean_em_f1": 0.6},
+            {"mean_bleu4": 0.4, "mean_rouge1": 0.8, "mean_em_f1": 0.2},
+        ])
+
+        comparison = build_paper_comparison(observed_summary)
+
+        self.assertEqual(comparison["metric"].tolist(), ["BLEU-4", "ROUGE-1", "EM F1"])
+        self.assertEqual(comparison["azure_observed_macro"].tolist(), [0.3, 0.6, 0.4])
+        self.assertEqual(comparison["paper_gpt4"].tolist(), [0.73, 0.72, 0.51])
+        self.assertEqual(comparison["difference_vs_paper"].tolist(), [-0.43, -0.12, -0.11])
 
     def test_notebook_checkpoint_reader_ignores_a_truncated_jsonl_tail(self):
         """An interrupted write does not block export of prior complete records."""

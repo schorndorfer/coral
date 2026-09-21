@@ -17,6 +17,12 @@ from coral import task_to_default_tuple_dict
 SOL_INPUT_PER_MILLION = 4.0
 SOL_OUTPUT_PER_MILLION = 20.0
 API_ENVELOPE_TOKEN_MARGIN = 256
+PAPER_BEST_MODEL = "GPT-4"
+PAPER_BEST_METRICS = {
+    "BLEU-4": 0.73,
+    "ROUGE-1": 0.72,
+    "EM F1": 0.51,
+}
 TERMINAL_STATUSES = {
     "valid",
     "valid_after_retry",
@@ -253,6 +259,35 @@ def write_observed_summary(
     path.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(path, index=False)
     return summary
+
+
+def build_paper_comparison(observed_summary: pd.DataFrame) -> pd.DataFrame:
+    """Compare observed-only macro metrics to the paper's reported GPT-4 values.
+
+    The CORAL paper reports GPT-4 as the best-performing model: BLEU-4 0.73,
+    ROUGE-1 0.72, and exact-match F1 0.51 (Sushil et al., NEJM AI, 2024,
+    doi:10.1056/AIdbp2300110). This is contextual rather than a strict
+    reproduction because this evaluation excludes synthetic legacy scorer rows.
+    """
+    metric_columns = {
+        "BLEU-4": "mean_bleu4",
+        "ROUGE-1": "mean_rouge1",
+        "EM F1": "mean_em_f1",
+    }
+    missing = set(metric_columns.values()).difference(observed_summary.columns)
+    if missing:
+        raise ValueError(f"observed summary is missing metrics: {', '.join(sorted(missing))}")
+    rows = []
+    for metric, column in metric_columns.items():
+        observed_macro = round(float(observed_summary[column].mean()), 2)
+        paper_score = PAPER_BEST_METRICS[metric]
+        rows.append({
+            "metric": metric,
+            "azure_observed_macro": observed_macro,
+            "paper_gpt4": paper_score,
+            "difference_vs_paper": round(observed_macro - paper_score, 2),
+        })
+    return pd.DataFrame(rows)
 
 
 @dataclass(frozen=True, repr=False)

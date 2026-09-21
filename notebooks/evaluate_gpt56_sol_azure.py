@@ -57,6 +57,7 @@ def _():
 
     from coral.azure_evaluation import (
         Usage,
+        build_paper_comparison,
         estimate_cost,
         load_azure_settings,
         run_evaluation,
@@ -67,6 +68,7 @@ def _():
     return (
         Path,
         Usage,
+        build_paper_comparison,
         estimate_cost,
         json,
         load_azure_settings,
@@ -418,18 +420,34 @@ def _(
 
 
 @app.cell
-def _(mo, observed_summary_path, pd):
+def _(build_paper_comparison, mo, observed_summary_path, pd):
     if observed_summary_path.exists():
         observed_summary = pd.read_csv(observed_summary_path)
-        score_summary_display = mo.vstack(
-            [
-                mo.md(
-                    "### Observed-only score summary\nThis excludes the legacy scorer's "
-                    "synthetic Cartesian-product rows."
-                ),
-                observed_summary,
-            ]
-        )
+        if observed_summary.empty:
+            score_summary_display = mo.callout(
+                "The observed-only summary contains no scored rows yet.", kind="warn"
+            )
+        else:
+            paper_comparison = build_paper_comparison(observed_summary)
+            score_summary_display = mo.vstack(
+                [
+                    mo.md(
+                        "### Observed-only score summary\nThis excludes the legacy scorer's "
+                        "synthetic Cartesian-product rows."
+                    ),
+                    observed_summary,
+                    mo.md(
+                        "### Comparison with the paper\n"
+                        "The CORAL paper's best-performing model was **GPT-4**: BLEU-4 "
+                        "0.73, ROUGE-1 0.72, and EM F1 0.51 (Sushil et al., NEJM AI, "
+                        "2024; doi:10.1056/AIdbp2300110). `difference_vs_paper` is the "
+                        "Azure observed-only macro minus that reported GPT-4 result. This "
+                        "is contextual, not a strict replication, because this evaluation "
+                        "excludes synthetic legacy-scorer rows."
+                    ),
+                    paper_comparison,
+                ]
+            )
     else:
         score_summary_display = mo.md(
             "### Observed-only score summary\nNo observed-only summary has been produced yet."
