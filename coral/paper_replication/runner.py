@@ -163,7 +163,7 @@ def _sanitized_error(error: Exception) -> str:
     details = type(error).__name__
     status_code = getattr(error, "status_code", None)
     if isinstance(status_code, int) and not isinstance(status_code, bool):
-        details += f" (status_code={status_code})"
+        details += f" (status_code={int(status_code)})"
     return details[:500]
 
 

@@ -349,6 +349,32 @@ class PaperRunnerTests(unittest.TestCase):
         for excluded in ("secret", "Fatigue", "Paper task prompt", "ValueError", PAPER_PREAMBLE):
             self.assertNotIn(excluded, message)
 
+    def test_status_code_subclass_cannot_echo_payload_through_formatting(self):
+        request_input = GRID.iloc[0].request_input
+        payload = f"Rejected {request_input} with API key {SETTINGS.api_key}"
+
+        class PayloadStatus(int):
+            def __format__(self, format_spec):
+                return payload
+
+        class RetryError(Exception):
+            status_code = PayloadStatus(429)
+
+        messages = []
+        client = FakeClient([RetryError(payload)] * 3)
+        result = self.run_grid(client, progress=messages.append)
+        checkpoint, = read_checkpoint(self.path)
+        self.assertEqual(len(client.responses.calls), 3)
+        self.assertEqual(result.iloc[0].status, "api_failed")
+        self.assertEqual(result.iloc[0].error, "RetryError (status_code=429)")
+        self.assertEqual(checkpoint["error"], "RetryError (status_code=429)")
+        for rendered in (
+            self.path.read_text(encoding="utf-8"), checkpoint["error"],
+            result.iloc[0].error, "\n".join(messages),
+        ):
+            for sensitive in (request_input, GRID.iloc[0].section_text, SETTINGS.api_key):
+                self.assertNotIn(sensitive, rendered)
+
     def test_empty_grid_sends_nothing_and_creates_no_checkpoint(self):
         client = FakeClient([])
         result = self.run_grid(client, grid=GRID.iloc[:0])
