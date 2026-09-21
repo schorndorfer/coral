@@ -1,6 +1,12 @@
 """Public interfaces for the frozen CORAL paper replication protocol."""
 
 from .grid import build_request_grid, load_source
+from .parsing import (
+    parse_annotation_set,
+    parse_namedtuple_expression,
+    parse_paper_output,
+    serialize_parsed_tuples,
+)
 from .protocol import (
     MAX_OUTPUT_TOKENS,
     PAPER_GPT4,
@@ -23,4 +29,8 @@ __all__ = [
     "build_request_grid",
     "get_task_prompt",
     "load_source",
+    "parse_annotation_set",
+    "parse_namedtuple_expression",
+    "parse_paper_output",
+    "serialize_parsed_tuples",
 ]
