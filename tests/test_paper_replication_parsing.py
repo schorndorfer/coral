@@ -79,6 +79,24 @@ class PaperParserTests(unittest.TestCase):
                 "symptoms",
             )
 
+    def test_duplicate_keyword_model_output_defaults(self):
+        output = (
+            "SymptomEnt(Symptom='first', Symptom='second', "
+            "Datetime={'today'})"
+        )
+        self.assertEqual(
+            parse_paper_output(output, "symptoms"),
+            [task_to_default_tuple_dict["symptoms"]],
+        )
+
+    def test_duplicate_keyword_annotation_raises_contextually(self):
+        annotation = (
+            "SymptomEnt(Symptom='first', Symptom='second', "
+            "Datetime={'today'})"
+        )
+        with self.assertRaisesRegex(ValueError, "invalid annotation"):
+            parse_annotation_set(annotation, "symptoms")
+
     def test_arbitrary_python_is_never_executed(self):
         payloads = (
             "__import__('os').system('false')",

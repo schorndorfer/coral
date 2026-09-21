@@ -41,6 +41,9 @@ def parse_namedtuple_expression(source: str, task: str) -> tuple:
         raise ValueError("starred positional arguments are not allowed")
     if any(keyword.arg is None for keyword in call.keywords):
         raise ValueError("keyword unpacking is not allowed")
+    keyword_names = [keyword.arg for keyword in call.keywords]
+    if len(keyword_names) != len(set(keyword_names)):
+        raise ValueError("duplicate keyword arguments are not allowed")
 
     try:
         arguments = [ast.literal_eval(argument) for argument in call.args]
