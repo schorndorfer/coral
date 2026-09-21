@@ -309,8 +309,35 @@ class PaperRunnerTests(unittest.TestCase):
         self.assertNotIn("secret", repr(SETTINGS))
         self.assertNotIn("secret", self.path.read_text(encoding="utf-8"))
         record, = read_checkpoint(self.path)
-        self.assertTrue(record["error"].startswith("ValueError: [REDACTED] was rejected"))
-        self.assertLessEqual(len(record["error"]), 500)
+        self.assertEqual(record["error"], "ValueError")
+
+    def test_payload_bearing_errors_never_expose_request_or_key(self):
+        request_input = GRID.iloc[0].request_input
+        payload = f"Rejected {request_input} with API key {SETTINGS.api_key}"
+
+        class PayloadStatusError(Exception):
+            status_code = payload
+
+        for error, expected, attempts in (
+            (ValueError(payload), "ValueError", 1),
+            (RateLimitError(payload), "RateLimitError (status_code=429)", 3),
+            (PayloadStatusError(payload), "PayloadStatusError", 1),
+        ):
+            with self.subTest(error=type(error).__name__):
+                messages = []
+                client = FakeClient([error] * attempts)
+                result = self.run_grid(client, progress=messages.append)
+                checkpoint = read_checkpoint(self.path)[-1]
+                self.assertEqual(result.iloc[0].status, "api_failed")
+                self.assertEqual(result.iloc[0].error, expected)
+                self.assertEqual(checkpoint["error"], expected)
+                self.assertEqual(len(client.responses.calls), attempts)
+                for rendered in (
+                    self.path.read_text(encoding="utf-8"), checkpoint["error"],
+                    result.iloc[0].error, "\n".join(messages),
+                ):
+                    for sensitive in (request_input, GRID.iloc[0].section_text, SETTINGS.api_key):
+                        self.assertNotIn(sensitive, rendered)
 
     def test_progress_reports_identity_status_spend_path_without_payload(self):
         messages = []

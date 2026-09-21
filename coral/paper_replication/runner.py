@@ -158,11 +158,13 @@ def _response_result(response: object) -> tuple[str, Usage]:
     return output_text, Usage(input_tokens, output_tokens)
 
 
-def _sanitized_error(error: Exception, api_key: str) -> str:
-    message = f"{type(error).__name__}: {error}"
-    if api_key:
-        message = message.replace(api_key, "[REDACTED]")
-    return message[:500]
+def _sanitized_error(error: Exception) -> str:
+    """Keep diagnostic metadata only; exception messages may echo clinical text."""
+    details = type(error).__name__
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int) and not isinstance(status_code, bool):
+        details += f" (status_code={status_code})"
+    return details[:500]
 
 
 def run_replication(
@@ -221,7 +223,7 @@ def run_replication(
                     record = PaperCheckpointRecord(
                         **identity, status="api_failed",
                         elapsed_seconds=time.perf_counter() - started,
-                        error=_sanitized_error(error, settings.api_key),
+                        error=_sanitized_error(error),
                     )
                     break
                 cost = estimate_cost(usage)
