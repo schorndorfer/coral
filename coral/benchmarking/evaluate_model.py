@@ -174,12 +174,13 @@ def _reorganize_scores_df(scores_df, eval_type):
     new_df = pd.DataFrame(new_df)
 
     # Rename fields for plotting
-    new_df['Relation'].replace('PrescribedMedicationName PotentialAdvEvent',
-                               'PrescribedMedicationName PotentialAdverseEvent', inplace=True)
-    new_df['Relation'].replace('PrescribedMedicationName ConfirmedAdvEvent',
-                               'PrescribedMedicationName ConfirmedAdverseEvent', inplace=True)
-    new_df['Relation'].replace('FutureMedicationName PotentialAdvEvent',
-                                'FutureMedicationName PotentialAdverseEvent', inplace=True)
+    new_df["Relation"] = new_df["Relation"].replace(
+        {
+            "PrescribedMedicationName PotentialAdvEvent": "PrescribedMedicationName PotentialAdverseEvent",
+            "PrescribedMedicationName ConfirmedAdvEvent": "PrescribedMedicationName ConfirmedAdverseEvent",
+            "FutureMedicationName PotentialAdvEvent": "FutureMedicationName PotentialAdverseEvent",
+        }
+    )
 
     return new_df
 
