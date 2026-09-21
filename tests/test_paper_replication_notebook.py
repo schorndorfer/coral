@@ -176,6 +176,33 @@ class PaperReplicationNotebookExecutionTests(unittest.TestCase):
         self.assertEqual(record["status"], "spend_cap_reached")
         self.assertFalse(self.topline_path.exists())
 
+    def test_script_spend_cap_environment_overrides_default(self):
+        client = FakeClient([FakeResponse("test-output-never-display") for _ in range(8)])
+        output, _, definitions = self.run_notebook(
+            {
+                "CORAL_PAPER_REPLICATION_RUN": "smoke",
+                "CORAL_PAPER_REPLICATION_SPEND_CAP": "30",
+            },
+            client,
+            allow_scoring=True,
+        )
+        self.assertEqual(definitions["effective_spend_cap"], 30.0)
+        self.assertIn("spend cap $30.00", output)
+
+    def test_script_rejects_invalid_spend_cap_before_creating_client(self):
+        for value in ("", "not-a-number", "-1", "nan", "inf"):
+            with self.subTest(value=value):
+                try:
+                    output, _, _ = self.run_notebook({
+                        "CORAL_PAPER_REPLICATION_RUN": "smoke",
+                        "CORAL_PAPER_REPLICATION_SPEND_CAP": value,
+                    })
+                except (AssertionError, ValueError) as error:
+                    self.fail(f"invalid spend cap raised {type(error).__name__}")
+                self.assertIn("Rejected", output)
+                self.assertIn("spend cap", output.lower())
+                self.assertFalse(self.checkpoint_path.exists())
+
     def test_inert_displays_saved_topline_without_loading_metrics(self):
         pd.DataFrame([{
             "metric": "BLEU-4", "gpt56_sol": 0.5, "paper_gpt4": 0.73,

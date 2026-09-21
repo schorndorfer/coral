@@ -105,7 +105,9 @@ def _(PAPER_SOURCE_COMMIT, mo):
         `RUN 1120`. The smoke proof is tied to the current protocol and source
         data, and is saved only after scoring and artifact writing succeed. It resumes
         those eight completions, leaving 1,112 requests. The spend cap includes
-        prior checkpoint spend. Pricing: $4/M input and $20/M output tokens.
+        prior checkpoint spend. Script mode reads the optional
+        `CORAL_PAPER_REPLICATION_SPEND_CAP` environment variable and defaults to
+        $100. Pricing: $4/M input and $20/M output tokens.
         """
     )
     return
@@ -192,6 +194,8 @@ def _(
     source,
     spend_cap,
 ):
+    import math
+
     is_script_mode = mo.app_meta().mode == "script"
     requested_action = (
         os.getenv("CORAL_PAPER_REPLICATION_RUN", "")
@@ -203,7 +207,18 @@ def _(
         if is_script_mode else full_confirmation.value
     )
     # Reading the cap in this cell makes every control change recheck the buttons.
-    effective_spend_cap = float(spend_cap.value)
+    raw_spend_cap = (
+        os.getenv("CORAL_PAPER_REPLICATION_SPEND_CAP", str(spend_cap.value))
+        if is_script_mode
+        else spend_cap.value
+    )
+    try:
+        effective_spend_cap = float(raw_spend_cap)
+    except (TypeError, ValueError):
+        effective_spend_cap = 0.0
+        spend_cap_error = True
+    else:
+        spend_cap_error = not math.isfinite(effective_spend_cap) or effective_spend_cap < 0
     checkpoint_records = read_checkpoint(checkpoint_path)
     if requested_action not in ("smoke", "full"):
         authorized_action = ""
@@ -211,7 +226,14 @@ def _(
             "Inert: no run requested. Use a run button, or set "
             "CORAL_PAPER_REPLICATION_RUN=smoke. Full script execution requires "
             "CORAL_PAPER_REPLICATION_RUN=full and "
-            "CORAL_PAPER_REPLICATION_CONFIRM='RUN 1120' after the smoke test."
+            "CORAL_PAPER_REPLICATION_CONFIRM='RUN 1120' after the smoke test. "
+            "Set CORAL_PAPER_REPLICATION_SPEND_CAP to override the $100 default."
+        )
+    elif spend_cap_error:
+        authorized_action = ""
+        selection_message = (
+            "Rejected: script spend cap (CORAL_PAPER_REPLICATION_SPEND_CAP) "
+            "must be a finite nonnegative number."
         )
     elif requested_action == "full" and confirmation != "RUN 1120":
         authorized_action = ""
