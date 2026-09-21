@@ -98,6 +98,22 @@ class PaperScoringTests(unittest.TestCase):
         self.assertEqual(scores.instances.em_f1.tolist(), [1.0])
         self.assertIn("CancerDiagnosis", scores.outputs.iloc[0].parsed_output_json)
 
+    def test_diagnosis_only_scores_as_unknown_symptom_without_rewriting_output(self):
+        source = SOURCE.assign(task="symptoms_at_diagnosis")
+        record = {
+            **COMPLETED,
+            "task": "symptoms_at_diagnosis",
+            "output_text": "CancerDiagnosis(Datetime={'today'})",
+        }
+
+        scores = score_completed_records(source, [record], FakeMetrics())
+
+        self.assertEqual(scores.instances.subrelation.tolist(), ["Symptom Datetime"])
+        self.assertEqual(scores.instances.em_f1.tolist(), [0.0])
+        parsed_output = scores.outputs.iloc[0].parsed_output_json
+        self.assertIn("CancerDiagnosis", parsed_output)
+        self.assertNotIn("SymptomEnt", parsed_output)
+
     def test_custom_deployment_alias_gets_topline_scores(self):
         custom = {**COMPLETED, "model": "sol-production"}
         scores = score_completed_records(SOURCE, [custom], FakeMetrics(), model="sol-production")

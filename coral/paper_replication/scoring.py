@@ -248,7 +248,12 @@ def score_completed_records(
             "parsed_output_json": serialize_parsed_tuples(parsed_output),
         })
         annotation_values = _source_annotation_values(source, key)
-        predicted_relations = format_relations(parsed_output)
+        scoreable_output = [
+            value for value in parsed_output if not isinstance(value, CancerDiagnosis)
+        ]
+        if not scoreable_output:
+            scoreable_output = [task_to_default_tuple_dict[task]]
+        predicted_relations = format_relations(scoreable_output)
         annotated_relations = format_relations(annotation_values)
 
         if active_metrics is None:
