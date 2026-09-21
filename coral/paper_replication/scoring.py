@@ -202,11 +202,10 @@ def _relation_scores(instances: pd.DataFrame) -> pd.DataFrame:
 
 
 def _topline_scores(relations: pd.DataFrame) -> pd.DataFrame:
-    target = relations[relations["model"] == "gpt-5.6-sol"]
     metric_columns = (("BLEU-4", "bleu4"), ("ROUGE-1", "rouge1"), ("EM F1", "em_f1"))
     records = []
     for label, column in metric_columns:
-        score = float(target[column].mean()) if not target.empty else float("nan")
+        score = float(relations[column].mean()) if not relations.empty else float("nan")
         paper_score = PAPER_GPT4[label]
         records.append({
             "metric": label,
@@ -221,9 +220,21 @@ def score_completed_records(
     source: pd.DataFrame,
     records: list[dict[str, object]],
     metrics: MetricProtocol | None = None,
+    *,
+    model: str | None = None,
 ) -> ReplicationScores:
-    """Score only actual completed API outputs using the paper's relation loop."""
+    """Score one deployment's completed outputs using the paper's relation loop.
+
+    Infer the deployment only when exactly one completed model is present.
+    An explicit model preserves checkpoint identities and excludes other models.
+    """
     completed = _completed_unique_records(records)
+    if model is None:
+        models = {str(record["model"]) for record in completed}
+        if len(models) != 1:
+            raise ValueError("provide model unless exactly one completed model is present")
+        model = next(iter(models))
+    completed = [record for record in completed if record["model"] == model]
     output_records = []
     instance_records = []
     active_metrics = metrics

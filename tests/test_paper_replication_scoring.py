@@ -71,6 +71,35 @@ COMPLETED = {
 
 
 class PaperScoringTests(unittest.TestCase):
+    def test_custom_deployment_alias_gets_topline_scores(self):
+        custom = {**COMPLETED, "model": "sol-production"}
+        scores = score_completed_records(SOURCE, [custom], FakeMetrics(), model="sol-production")
+        self.assertEqual(scores.topline.gpt56_sol.tolist(), [1.0, 1.0, 1.0])
+        self.assertEqual(scores.outputs.model.tolist(), ["sol-production"])
+        self.assertEqual(set(scores.relations.model), {"sol-production"})
+
+    def test_sole_completed_model_is_inferred_without_literal_deployment(self):
+        custom = {**COMPLETED, "model": "sol-production"}
+        scores = score_completed_records(SOURCE, [custom], FakeMetrics())
+        self.assertEqual(scores.topline.gpt56_sol.tolist(), [1.0, 1.0, 1.0])
+
+    def test_multiple_completed_models_require_explicit_selection(self):
+        custom = {**COMPLETED, "model": "sol-production", "output_text": "invalid"}
+        with self.assertRaisesRegex(ValueError, "exactly one completed model"):
+            score_completed_records(SOURCE, [COMPLETED, custom], FakeMetrics())
+        scores = score_completed_records(
+            SOURCE, [COMPLETED, custom], FakeMetrics(), model="sol-production",
+        )
+        self.assertEqual(scores.topline.gpt56_sol.tolist(), [0.0, 0.0, 0.0])
+        self.assertEqual(scores.outputs.model.tolist(), ["sol-production"])
+
+    def test_empty_records_require_model_but_explicit_selection_stays_empty(self):
+        with self.assertRaisesRegex(ValueError, "exactly one completed model"):
+            score_completed_records(SOURCE, [], FakeMetrics())
+        scores = score_completed_records(SOURCE, [], FakeMetrics(), model="sol-production")
+        self.assertTrue(scores.outputs.empty)
+        self.assertTrue(scores.topline.gpt56_sol.isna().all())
+
     def test_scores_only_completed_api_outputs(self):
         failed = {**COMPLETED, "doc_idx": "2", "status": "api_failed", "output_text": None}
         scores = score_completed_records(SOURCE, [COMPLETED, failed], FakeMetrics())

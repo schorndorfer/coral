@@ -342,12 +342,43 @@ class PaperRunnerTests(unittest.TestCase):
     def test_progress_reports_identity_status_spend_path_without_payload(self):
         messages = []
         self.run_grid(FakeClient([ValueError("secret was rejected")]), progress=messages.append)
-        self.assertEqual(len(messages), 1)
-        message, = messages
-        for expected in ("1/1", "hpi", "symptoms", "api_failed", "0.000000", str(self.path)):
-            self.assertIn(expected, message)
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0], "Starting 1/1: doc 1, hpi, symptoms")
+        self.assertEqual(
+            messages[1],
+            f"Finished 1/1: api_failed; spent $0.000000; checkpoint: {self.path}",
+        )
         for excluded in ("secret", "Fatigue", "Paper task prompt", "ValueError", PAPER_PREAMBLE):
-            self.assertNotIn(excluded, message)
+            self.assertNotIn(excluded, "\n".join(messages))
+
+    def test_start_progress_precedes_client_and_finish_follows_completion(self):
+        events = []
+
+        class ObservedResponses:
+            def create(self, **kwargs):
+                events.append("client called")
+                return FakeResponse("not parseable by design")
+
+        client = type("ObservedClient", (), {"responses": ObservedResponses()})()
+        self.run_grid(client, progress=events.append)
+        self.assertEqual(events, [
+            "Starting 1/1: doc 1, hpi, symptoms",
+            "client called",
+            f"Finished 1/1: completed; spent $0.000800; checkpoint: {self.path}",
+        ])
+
+    def test_resume_and_cap_report_start_finish_without_client_calls(self):
+        for status, records, cap in (
+            ("skipped_on_resume", [COMPLETED], 1.0),
+            ("spend_cap_reached", [], 0.0),
+        ):
+            with self.subTest(status=status):
+                self.write_records(records)
+                messages = []
+                self.run_grid(FakeClient([]), spend_cap=cap, progress=messages.append)
+                self.assertEqual(len(messages), 2)
+                self.assertTrue(messages[0].startswith("Starting 1/1:"))
+                self.assertTrue(messages[1].startswith(f"Finished 1/1: {status};"))
 
     def test_status_code_subclass_cannot_echo_payload_through_formatting(self):
         request_input = GRID.iloc[0].request_input

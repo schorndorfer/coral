@@ -190,6 +190,11 @@ def run_replication(
             "task": str(row["task"]), "model": settings.deployment,
         }
         key = (identity["doc_idx"], identity["section_name"], identity["task"], identity["model"])
+        if progress is not None:
+            progress(
+                f"Starting {ordinal}/{len(grid)}: doc {identity['doc_idx']}, "
+                f"{identity['section_name']}, {identity['task']}"
+            )
         if key in completed:
             record = PaperCheckpointRecord(**identity, status="skipped_on_resume")
         else:
@@ -239,8 +244,8 @@ def run_replication(
         results.append(asdict(record))
         if progress is not None:
             progress(
-                f"{ordinal}/{len(grid)}: doc {record.doc_idx}, {record.section_name}, "
-                f"{record.task}, {record.status}, spend ${spent:.6f}, {checkpoint_path}"
+                f"Finished {ordinal}/{len(grid)}: {record.status}; "
+                f"spent ${spent:.6f}; checkpoint: {checkpoint_path}"
             )
         if record.status == "spend_cap_reached":
             break
