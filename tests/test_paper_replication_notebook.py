@@ -71,6 +71,7 @@ class PaperReplicationNotebookExecutionTests(unittest.TestCase):
         self.output_path = Path(self.directory.name)
         self.checkpoint_path = self.output_path / f"{PREFIX}.jsonl"
         self.topline_path = self.output_path / f"{PREFIX}_topline.csv"
+        self.smoke_marker_path = self.output_path / f"{PREFIX}_smoke.json"
 
     def smoke_records(self):
         return [
@@ -87,7 +88,10 @@ class PaperReplicationNotebookExecutionTests(unittest.TestCase):
             "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
         )
 
-    def run_notebook(self, env=None, client=None, allow_scoring=False, ui=None):
+    def run_notebook(
+        self, env=None, client=None, allow_scoring=False, ui=None,
+        score_error=None, artifact_error=None,
+    ):
         notebook_app = runpy.run_path(str(NOTEBOOK.resolve()))["app"]
         output = io.StringIO()
         offline_score = functools.partial(score_completed_records, metrics=FakeMetrics())
@@ -96,6 +100,7 @@ class PaperReplicationNotebookExecutionTests(unittest.TestCase):
             "output_path": self.output_path,
             "checkpoint_path": self.checkpoint_path,
             "topline_path": self.topline_path,
+            "smoke_marker_path": self.smoke_marker_path,
         }
         if ui is not None:
             injected_definitions.update({
@@ -111,14 +116,18 @@ class PaperReplicationNotebookExecutionTests(unittest.TestCase):
                 else AssertionError("Unauthorized client construction")
             )),
             patch("coral.paper_replication.score_completed_records", side_effect=(
-                offline_score if allow_scoring
+                score_error if score_error is not None else offline_score if allow_scoring
                 else AssertionError("Inert/rejected action must not load metrics")
-            )),
+            )) as score_call,
+            patch("coral.paper_replication.write_artifacts", side_effect=artifact_error)
+            if artifact_error is not None else contextlib.nullcontext(),
             patch("marimo.app_meta", return_value=SimpleNamespace(mode="edit"))
             if ui is not None else contextlib.nullcontext(),
             contextlib.redirect_stdout(output),
         ):
             rendered, definitions = notebook_app.run(defs=injected_definitions)
+        if not allow_scoring and score_error is None:
+            score_call.assert_not_called()
         visible = output.getvalue() + "\n".join(
             getattr(item, "text", str(item)) for item in rendered
         )
@@ -181,7 +190,13 @@ class PaperReplicationNotebookExecutionTests(unittest.TestCase):
         self.assertFalse(self.checkpoint_path.exists())
 
     def test_full_requires_exact_confirmation_even_with_completed_smoke(self):
-        self.write_checkpoint(self.smoke_records())
+        self.run_notebook(
+            {"CORAL_PAPER_REPLICATION_RUN": "smoke"},
+            FakeClient([FakeResponse("test-output-never-display") for _ in range(8)]),
+            allow_scoring=True,
+        )
+        self.assertTrue(self.smoke_marker_path.exists())
+        before = self.topline_path.read_bytes()
         for confirmation in ("", "run 1120", "RUN 1120 "):
             with self.subTest(confirmation=confirmation):
                 output, _, _ = self.run_notebook({
@@ -190,7 +205,7 @@ class PaperReplicationNotebookExecutionTests(unittest.TestCase):
                 })
                 self.assertIn("Rejected", output)
                 self.assertIn("RUN 1120", output)
-        self.assertFalse(self.topline_path.exists())
+        self.assertEqual(self.topline_path.read_bytes(), before)
 
     def test_full_requires_every_isolated_smoke_key_for_current_deployment(self):
         records = self.smoke_records()
@@ -238,15 +253,134 @@ class PaperReplicationNotebookExecutionTests(unittest.TestCase):
         ])
 
     def test_confirmed_full_resumes_smoke_and_requests_remaining_1112(self):
-        self.write_checkpoint(self.smoke_records())
+        self.run_notebook(
+            {"CORAL_PAPER_REPLICATION_RUN": "smoke"},
+            FakeClient([FakeResponse("test-output-never-display") for _ in range(8)]),
+            allow_scoring=True,
+        )
+        self.assertTrue(self.smoke_marker_path.exists())
         client = FakeClient([FakeResponse("test-output-never-display") for _ in range(1112)])
-        _, _, _ = self.run_notebook({
+        _, _, full_definitions = self.run_notebook({
             "CORAL_PAPER_REPLICATION_RUN": "full",
             "CORAL_PAPER_REPLICATION_CONFIRM": "RUN 1120",
         }, client, allow_scoring=True)
         self.assertEqual(len(client.responses.calls), 1112)
         self.assertEqual(len(self.checkpoint_path.read_text().splitlines()), 1120)
         self.assertEqual(len(pd.read_csv(self.topline_path)), 3)
+        self.assertIsNotNone(full_definitions["scores"])
+        self.assertEqual(len(pd.read_csv(self.output_path / f"{PREFIX}_outputs.csv")), 1120)
+        resumed_client = FakeClient([])
+        self.run_notebook({
+            "CORAL_PAPER_REPLICATION_RUN": "full",
+            "CORAL_PAPER_REPLICATION_CONFIRM": "RUN 1120",
+        }, resumed_client, allow_scoring=True)
+        self.assertEqual(resumed_client.responses.calls, [])
+
+    def test_completed_smoke_without_scoring_marker_cannot_unlock_full(self):
+        self.write_checkpoint(self.smoke_records())
+        for ui in (None, {"full": True, "confirmation": "RUN 1120"}):
+            with self.subTest(ui=ui):
+                output, rendered, _ = self.run_notebook({
+                    "CORAL_PAPER_REPLICATION_RUN": "full",
+                    "CORAL_PAPER_REPLICATION_CONFIRM": "RUN 1120",
+                }, ui=ui)
+                visible = output + "\n".join(getattr(item, "text", str(item)) for item in rendered)
+                self.assertIn("Rejected", visible)
+                self.assertIn("scored smoke", visible)
+
+    def test_successful_smoke_writes_bound_marker_and_score_snapshot(self):
+        self.run_notebook(
+            {"CORAL_PAPER_REPLICATION_RUN": "smoke"},
+            FakeClient([FakeResponse("test-output-never-display") for _ in range(8)]),
+            allow_scoring=True,
+        )
+        marker = json.loads(self.smoke_marker_path.read_text())
+        self.assertEqual(marker["deployment"], "gpt-5.6-sol")
+        self.assertEqual(len(marker["smoke_keys"]), 8)
+        self.assertEqual(len(marker["source_sha256"]), 64)
+        self.assertEqual(len(marker["protocol_sha256"]), 64)
+        self.assertEqual(self.smoke_marker_path.with_suffix(".csv").read_bytes(), self.topline_path.read_bytes())
+        self.assertNotIn("test-output-never-display", self.smoke_marker_path.read_text())
+
+    def test_scoring_or_artifact_failure_leaves_no_valid_smoke_marker(self):
+        for failure in ("scoring", "artifact"):
+            with self.subTest(failure=failure):
+                self.write_checkpoint(self.smoke_records())
+                output, rendered, _ = self.run_notebook(
+                    {"CORAL_PAPER_REPLICATION_RUN": "smoke"}, FakeClient([]), allow_scoring=True,
+                    score_error=ValueError("test-output-never-display") if failure == "scoring" else None,
+                    artifact_error=OSError("test-output-never-display") if failure == "artifact" else None,
+                )
+                visible = output + "\n".join(getattr(item, "text", str(item)) for item in rendered)
+                self.assertIn("Scoring or artifact writing failed", visible)
+                self.assertFalse(self.smoke_marker_path.exists())
+                rejection, _, _ = self.run_notebook({
+                    "CORAL_PAPER_REPLICATION_RUN": "full",
+                    "CORAL_PAPER_REPLICATION_CONFIRM": "RUN 1120",
+                })
+                self.assertIn("Rejected", rejection)
+
+    def test_failed_smoke_rescoring_invalidates_prior_success_marker(self):
+        self.run_notebook(
+            {"CORAL_PAPER_REPLICATION_RUN": "smoke"},
+            FakeClient([FakeResponse("test-output-never-display") for _ in range(8)]),
+            allow_scoring=True,
+        )
+        self.assertTrue(self.smoke_marker_path.exists())
+        self.run_notebook(
+            {"CORAL_PAPER_REPLICATION_RUN": "smoke"}, FakeClient([]), allow_scoring=True,
+            score_error=ValueError("test-output-never-display"),
+        )
+        self.assertFalse(self.smoke_marker_path.exists())
+
+    def test_stale_marker_identity_or_score_snapshot_cannot_unlock_full(self):
+        self.run_notebook(
+            {"CORAL_PAPER_REPLICATION_RUN": "smoke"},
+            FakeClient([FakeResponse("test-output-never-display") for _ in range(8)]),
+            allow_scoring=True,
+        )
+        marker = json.loads(self.smoke_marker_path.read_text())
+        for field, value in (
+            ("deployment", "other-deployment"), ("smoke_keys", marker["smoke_keys"][:7]),
+            ("source_sha256", "0" * 64), ("protocol_sha256", "0" * 64),
+        ):
+            with self.subTest(field=field):
+                self.smoke_marker_path.write_text(json.dumps({**marker, field: value}))
+                output, _, _ = self.run_notebook({
+                    "CORAL_PAPER_REPLICATION_RUN": "full",
+                    "CORAL_PAPER_REPLICATION_CONFIRM": "RUN 1120",
+                })
+                self.assertIn("Rejected", output)
+        self.smoke_marker_path.write_text(json.dumps(marker))
+        self.smoke_marker_path.with_suffix(".csv").write_text("stale scores")
+        output, _, _ = self.run_notebook({
+            "CORAL_PAPER_REPLICATION_RUN": "full", "CORAL_PAPER_REPLICATION_CONFIRM": "RUN 1120",
+        })
+        self.assertIn("Rejected", output)
+
+    def test_changed_smoke_output_or_source_invalidates_marker(self):
+        self.run_notebook(
+            {"CORAL_PAPER_REPLICATION_RUN": "smoke"},
+            FakeClient([FakeResponse("test-output-never-display") for _ in range(8)]),
+            allow_scoring=True,
+        )
+        original_checkpoint = self.checkpoint_path.read_text()
+        records = [json.loads(line) for line in original_checkpoint.splitlines()]
+        records[0]["output_text"] = "changed output"
+        self.write_checkpoint(records)
+        output, _, _ = self.run_notebook({
+            "CORAL_PAPER_REPLICATION_RUN": "full", "CORAL_PAPER_REPLICATION_CONFIRM": "RUN 1120",
+        })
+        self.assertIn("Rejected", output)
+        self.checkpoint_path.write_text(original_checkpoint)
+        source = load_source(self.source_path)
+        source.loc[source.index[0], "annotation_set"] = ""
+        self.source_path = self.output_path / "changed_source.csv"
+        source.to_csv(self.source_path, index=False)
+        output, _, _ = self.run_notebook({
+            "CORAL_PAPER_REPLICATION_RUN": "full", "CORAL_PAPER_REPLICATION_CONFIRM": "RUN 1120",
+        })
+        self.assertIn("Rejected", output)
 
     def test_custom_deployment_smoke_retains_identity_and_produces_topline(self):
         client = FakeClient([FakeResponse("test-output-never-display") for _ in range(8)])

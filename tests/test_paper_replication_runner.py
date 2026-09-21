@@ -72,6 +72,38 @@ COMPLETED = {
 
 
 class PaperRunnerSettingsTests(unittest.TestCase):
+    def test_environment_to_foundry_client_preserves_trimmed_endpoint_verbatim(self):
+        for endpoint in (
+            "https://example.services.ai.azure.com:443/openai/v1/",
+            "https://EXAMPLE.services.ai.azure.com:443/openai/v1/?api-version=preview",
+        ):
+            with self.subTest(endpoint=endpoint):
+                settings = load_azure_settings({
+                    "AZURE_OPENAI_API_KEY": "secret", "AZURE_OPENAI_ENDPOINT": f"  {endpoint}  ",
+                })
+                client = create_azure_client(
+                    settings, openai_class=RecordingClient, azure_class=self.fail_constructor,
+                )
+                self.assertEqual(client.kwargs["base_url"], endpoint)
+
+    def test_paper_settings_validate_azure_fields_and_preserve_standard_behavior(self):
+        environment = {
+            "AZURE_OPENAI_API_KEY": "secret",
+            "AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com/openai/v1/?ignored=yes",
+            "OPENAI_API_KEY": "unrelated",
+        }
+        settings = load_azure_settings(environment)
+        self.assertEqual(settings.endpoint, "https://example.openai.azure.com")
+        self.assertEqual(settings.api_key, "secret")
+        self.assertEqual(settings.deployment, "gpt-5.6-sol")
+        for field, value in (
+            ("AZURE_OPENAI_API_KEY", " "), ("AZURE_OPENAI_ENDPOINT", " "),
+            ("AZURE_OPENAI_ENDPOINT", "/relative"), ("AZURE_OPENAI_DEPLOYMENT", " "),
+            ("AZURE_OPENAI_API_VERSION", " "),
+        ):
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                load_azure_settings({**environment, field: value})
+
     def test_foundry_v1_endpoint_is_preserved_as_openai_base_url(self):
         settings = AzureSettings(
             "secret",

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 import math
 from pathlib import Path
 import time
 from typing import Callable, Iterable, Mapping, cast
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import pandas as pd
 
@@ -17,9 +18,8 @@ from coral.azure_evaluation import (
     ResponseClient,
     Usage,
     estimate_cost,
-    load_azure_settings,
 )
-from .protocol import MAX_OUTPUT_TOKENS, REASONING_EFFORT
+from .protocol import MAX_OUTPUT_TOKENS, PAPER_SOURCE_COMMIT, REASONING_EFFORT
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,31 @@ class PaperCheckpointRecord:
     cost: float = 0.0
     elapsed_seconds: float = 0.0
     error: str | None = None
+
+
+def load_azure_settings(env: Mapping[str, str]) -> AzureSettings:
+    """Validate paper-run settings without rewriting Foundry base URLs."""
+    api_key = env.get("AZURE_OPENAI_API_KEY", "")
+    endpoint = env.get("AZURE_OPENAI_ENDPOINT", "").strip()
+    if not api_key.strip():
+        raise ValueError("AZURE_OPENAI_API_KEY is required")
+    if not endpoint:
+        raise ValueError("AZURE_OPENAI_ENDPOINT is required")
+    parsed = urlsplit(endpoint)
+    if not parsed.scheme or not parsed.hostname:
+        raise ValueError("AZURE_OPENAI_ENDPOINT must be an absolute URL")
+    if not parsed.hostname.lower().endswith(".services.ai.azure.com"):
+        endpoint_path = parsed.path.rstrip("/")
+        if endpoint_path == "/openai/v1":
+            endpoint_path = ""
+        endpoint = urlunsplit((parsed.scheme, parsed.netloc, endpoint_path, "", ""))
+    deployment = env.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5.6-sol").strip()
+    api_version = env.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview").strip()
+    if not deployment:
+        raise ValueError("AZURE_OPENAI_DEPLOYMENT cannot be empty")
+    if not api_version:
+        raise ValueError("AZURE_OPENAI_API_VERSION cannot be empty")
+    return AzureSettings(api_key, endpoint, deployment, api_version)
 
 
 def create_azure_client(
@@ -131,6 +156,80 @@ def smoke_is_complete(
         for row in grid.head(8).itertuples(index=False)
     }
     return required.issubset(completed_keys(records))
+
+
+def _fingerprint(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _smoke_identity(
+    grid: pd.DataFrame, source: pd.DataFrame, records: list[dict[str, object]], model: str,
+) -> dict[str, object]:
+    keys = [
+        (str(row.doc_idx), str(row.section_name), str(row.task), model)
+        for row in grid.head(8).itertuples(index=False)
+    ]
+    if len(set(keys)) != 8:
+        raise ValueError("smoke proof requires exactly eight unique request keys")
+    outputs = {}
+    for record in records:
+        key = tuple(record.get(field) for field in ("doc_idx", "section_name", "task", "model"))
+        if record.get("status") == "completed" and key in keys and key not in outputs:
+            outputs[key] = record.get("output_text")
+    source_columns = ["doc_idx", "section_name", "section_text", "task", "annotation_set"]
+    canonical_source = source.loc[:, source_columns].astype(str).sort_values(source_columns)
+    return {
+        "version": 1,
+        "deployment": model,
+        "smoke_keys": [list(key) for key in keys],
+        "paper_source_commit": PAPER_SOURCE_COMMIT,
+        "source_sha256": _fingerprint(canonical_source.to_dict("records")),
+        "protocol_sha256": _fingerprint({
+            "source_commit": PAPER_SOURCE_COMMIT,
+            "reasoning_effort": REASONING_EFFORT,
+            "max_output_tokens": MAX_OUTPUT_TOKENS,
+            "requests": grid.loc[:, [
+                "doc_idx", "section_name", "task", "instructions", "request_input",
+            ]].to_dict("records"),
+        }),
+        "smoke_outputs_sha256": _fingerprint([outputs.get(key) for key in keys]),
+    }
+
+
+def write_smoke_marker(
+    grid: pd.DataFrame, source: pd.DataFrame, records: list[dict[str, object]],
+    model: str, marker_path: Path, topline_path: Path,
+) -> None:
+    """Record successful smoke scoring after its top-line artifact was written."""
+    if not smoke_is_complete(grid, records, model):
+        raise ValueError("all eight smoke responses must be completed before recording scores")
+    identity = _smoke_identity(grid, source, records, model)
+    topline_bytes = topline_path.read_bytes()
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    # Full scoring may replace the general top-line CSV; retain the smoke proof.
+    marker_path.with_suffix(".csv").write_bytes(topline_bytes)
+    marker = {**identity, "topline_sha256": hashlib.sha256(topline_bytes).hexdigest()}
+    marker_path.write_text(json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def smoke_is_scored(
+    grid: pd.DataFrame, source: pd.DataFrame, records: list[dict[str, object]],
+    model: str, marker_path: Path,
+) -> bool:
+    """Verify current smoke identities and the saved successful score artifact."""
+    if not smoke_is_complete(grid, records, model):
+        return False
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        topline_bytes = marker_path.with_suffix(".csv").read_bytes()
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return marker == {
+        **_smoke_identity(grid, source, records, model),
+        "topline_sha256": hashlib.sha256(topline_bytes).hexdigest(),
+    }
 
 
 def _append_checkpoint(path: Path, record: PaperCheckpointRecord) -> None:

@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from coral import RadTest, SymptomEnt, task_to_default_tuple_dict
+from coral import CancerDiagnosis, RadTest, SymptomEnt, task_to_default_tuple_dict
 from coral.paper_replication.parsing import (
     parse_annotation_set,
     parse_namedtuple_expression,
@@ -11,6 +11,64 @@ from coral.paper_replication.parsing import (
 
 
 class PaperParserTests(unittest.TestCase):
+    def test_malformed_field_shapes_default_and_serialize_safely(self):
+        malformed = (
+            "SymptomEnt('fatigue', None)",
+            "SymptomEnt('fatigue', {1, 'today'})",
+            "SymptomEnt('fatigue', {b'today'})",
+            "SymptomEnt(b'fatigue', {'today'})",
+            "SymptomEnt(1, {'today'})",
+            "SymptomEnt('fatigue', 'today')",
+            "SymptomEnt('fatigue', [['today']])",
+            "SymptomEnt('fatigue', {'date': None})",
+            "SymptomEnt('fatigue', {'date': ['today']})",
+            "SymptomEnt('fatigue', {b'date': 'today'})",
+            "SymptomEnt('fatigue', {1: 'today', 'date': 'yesterday'})",
+        )
+        for output in malformed:
+            with self.subTest(output=output):
+                parsed = parse_paper_output(output, "symptoms")
+                self.assertEqual(parsed, [task_to_default_tuple_dict["symptoms"]])
+                self.assertEqual(json.loads(serialize_parsed_tuples(parsed))[0]["fields"], {
+                    "Symptom": "unknown", "Datetime": ["unknown"],
+                })
+
+    def test_malformed_annotation_field_shapes_raise_contextual_errors(self):
+        for relation in ("None", "{1, 'today'}", "{b'today'}", "[['today']]"):
+            with self.subTest(relation=relation), self.assertRaisesRegex(
+                ValueError, "invalid annotation for task symptoms on line 1"
+            ):
+                parse_annotation_set(f"SymptomEnt('fatigue', {relation})", "symptoms")
+
+    def test_diagnosis_datetime_requires_string_collection(self):
+        for value in ("None", "'today'", "{1}", "{b'today'}"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    parse_paper_output(f"CancerDiagnosis({value})", "symptoms_at_diagnosis"),
+                    [task_to_default_tuple_dict["symptoms_at_diagnosis"]],
+                )
+
+    def test_secondary_scalar_fields_require_strings(self):
+        for output, task in (
+            ("FutureMedEnt('drug', {'planned'}, {'rash'})", "future_med_consideration_ae"),
+            (
+                "PrescribedMedEnt('drug', {'today'}, {'unknown'}, {'cancer'}, None, {'rash'}, {'unknown'})",
+                "prescribed_med_begin_end_reason_continuity_ae",
+            ),
+        ):
+            with self.subTest(task=task):
+                self.assertEqual(parse_paper_output(output, task), [task_to_default_tuple_dict[task]])
+
+    def test_preserves_diagnosis_constructor_only_for_symptoms_at_diagnosis(self):
+        diagnosis = "CancerDiagnosis(Datetime={'today'})"
+        self.assertEqual(
+            parse_namedtuple_expression(diagnosis, "symptoms_at_diagnosis"),
+            CancerDiagnosis({"today"}),
+        )
+        for task in ("symptoms", "symptoms_due_to_cancer", "histology_datetime"):
+            with self.subTest(task=task), self.assertRaisesRegex(ValueError, "constructor"):
+                parse_namedtuple_expression(diagnosis, task)
+
     def test_parses_keyword_and_positional_named_tuples(self):
         keyword = parse_namedtuple_expression(
             "SymptomEnt(Symptom='fatigue', Datetime={'today'})", "symptoms"

@@ -110,7 +110,7 @@ def format_relations(values: list[tuple]) -> dict[str, set[str]]:
 
             subrelation = f"{primary_type} {relation_type}"
             relation_values = relations.setdefault(subrelation, set())
-            if isinstance(relation_value, (set, list)):
+            if isinstance(relation_value, (set, list, tuple)):
                 for item in relation_value:
                     relation_values.add(f"{primary_value} {item}")
             else:

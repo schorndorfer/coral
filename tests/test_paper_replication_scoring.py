@@ -71,6 +71,33 @@ COMPLETED = {
 
 
 class PaperScoringTests(unittest.TestCase):
+    def test_crashing_model_shapes_are_defaulted_before_serializing_and_scoring(self):
+        for output in (
+            "SymptomEnt('fatigue', None)", "SymptomEnt('fatigue', {1, 'today'})",
+            "SymptomEnt('fatigue', {b'today'})", "SymptomEnt(b'fatigue', {'today'})",
+        ):
+            with self.subTest(output=output):
+                scores = score_completed_records(SOURCE, [{**COMPLETED, "output_text": output}], FakeMetrics())
+                self.assertEqual(scores.instances.em_f1.tolist(), [0.0])
+                self.assertIn('"Symptom": "unknown"', scores.outputs.iloc[0].parsed_output_json)
+
+    def test_all_string_collection_shapes_emit_the_same_relation(self):
+        for relation in ("{'today'}", "['today']", "('today',)", "{'date': 'today'}"):
+            with self.subTest(relation=relation):
+                output = f"SymptomEnt('fatigue', {relation})"
+                scores = score_completed_records(SOURCE, [{**COMPLETED, "output_text": output}], FakeMetrics())
+                self.assertEqual(scores.instances.em_f1.tolist(), [1.0])
+
+    def test_diagnosis_and_correct_symptom_score_without_unknown_default(self):
+        source = SOURCE.assign(task="symptoms_at_diagnosis")
+        record = {
+            **COMPLETED, "task": "symptoms_at_diagnosis",
+            "output_text": "CancerDiagnosis(Datetime={'today'})\n" + COMPLETED["output_text"],
+        }
+        scores = score_completed_records(source, [record], FakeMetrics())
+        self.assertEqual(scores.instances.em_f1.tolist(), [1.0])
+        self.assertIn("CancerDiagnosis", scores.outputs.iloc[0].parsed_output_json)
+
     def test_custom_deployment_alias_gets_topline_scores(self):
         custom = {**COMPLETED, "model": "sol-production"}
         scores = score_completed_records(SOURCE, [custom], FakeMetrics(), model="sol-production")

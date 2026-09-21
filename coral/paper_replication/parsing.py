@@ -4,7 +4,7 @@ import ast
 import json
 import re
 
-from coral import task_to_default_tuple_dict
+from coral import CancerDiagnosis, task_to_default_tuple_dict
 
 from .protocol import TASK_ORDER
 
@@ -15,6 +15,9 @@ TASK_CONSTRUCTORS = {
     if task in TASK_ORDER
 }
 NON_ANSWERS = ("no ", "none ")
+CONSTRUCTOR_DEFAULTS = {
+    type(default): default for default in task_to_default_tuple_dict.values()
+} | {CancerDiagnosis: CancerDiagnosis({"unknown"})}
 
 
 def _constructor_for_task(task: str) -> type[tuple]:
@@ -22,6 +25,23 @@ def _constructor_for_task(task: str) -> type[tuple]:
         return TASK_CONSTRUCTORS[task]
     except KeyError as error:
         raise ValueError(f"unknown paper task: {task}") from error
+
+
+def _validate_fields(value: tuple) -> None:
+    """Enforce the paper's string scalars and collections of relation strings."""
+    defaults = CONSTRUCTOR_DEFAULTS[type(value)]
+    for field, item, default in zip(value._fields, value, defaults, strict=True):
+        if isinstance(default, str):
+            if not isinstance(item, str):
+                raise ValueError(f"{field} must be a string")
+        else:
+            if not isinstance(item, (set, list, tuple, dict)):
+                raise ValueError(f"{field} must be a collection of strings")
+            if isinstance(item, dict) and not all(isinstance(key, str) for key in item):
+                raise ValueError(f"{field} dictionary labels must be strings")
+            values = item.values() if isinstance(item, dict) else item
+            if not all(isinstance(member, str) for member in values):
+                raise ValueError(f"{field} must contain only strings")
 
 
 def parse_namedtuple_expression(source: str, task: str) -> tuple:
@@ -35,8 +55,12 @@ def parse_namedtuple_expression(source: str, task: str) -> tuple:
     call = expression.body
     if not isinstance(call, ast.Call):
         raise ValueError("named-tuple expression must be a constructor call")
-    if not isinstance(call.func, ast.Name) or call.func.id != constructor.__name__:
+    allowed = {constructor.__name__: constructor}
+    if task == "symptoms_at_diagnosis":
+        allowed[CancerDiagnosis.__name__] = CancerDiagnosis
+    if not isinstance(call.func, ast.Name) or call.func.id not in allowed:
         raise ValueError(f"unexpected constructor for task {task}")
+    constructor = allowed[call.func.id]
     if any(isinstance(argument, ast.Starred) for argument in call.args):
         raise ValueError("starred positional arguments are not allowed")
     if any(keyword.arg is None for keyword in call.keywords):
@@ -54,9 +78,11 @@ def parse_namedtuple_expression(source: str, task: str) -> tuple:
         raise ValueError("named-tuple arguments must be literals") from error
 
     try:
-        return constructor(*arguments, **keywords)
+        result = constructor(*arguments, **keywords)
     except TypeError as error:
         raise ValueError(f"invalid {constructor.__name__} fields") from error
+    _validate_fields(result)
+    return result
 
 
 def _paper_output_text(output: object) -> str:

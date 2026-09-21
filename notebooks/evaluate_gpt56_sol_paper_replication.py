@@ -50,7 +50,9 @@ def _():
         run_replication,
         score_completed_records,
         smoke_is_complete,
+        smoke_is_scored,
         write_artifacts,
+        write_smoke_marker,
     )
 
     return (
@@ -71,7 +73,9 @@ def _():
         run_replication,
         score_completed_records,
         smoke_is_complete,
+        smoke_is_scored,
         write_artifacts,
+        write_smoke_marker,
     )
 
 
@@ -97,7 +101,9 @@ def _(PAPER_SOURCE_COMMIT, mo):
 
         First run the eight-request smoke test and inspect its checkpoint and
         top-line artifact. Full execution requires all eight smoke keys for the
-        current deployment plus the exact confirmation `RUN 1120`. It resumes
+        current deployment, verified smoke scores, and the exact confirmation
+        `RUN 1120`. The smoke proof is tied to the current protocol and source
+        data, and is saved only after scoring and artifact writing succeed. It resumes
         those eight completions, leaving 1,112 requests. The spend cap includes
         prior checkpoint spend. Pricing: $4/M input and $20/M output tokens.
         """
@@ -111,7 +117,8 @@ def _(Path):
     output_path = Path("output")
     checkpoint_path = output_path / "gpt56_sol_paper_replication.jsonl"
     topline_path = output_path / "gpt56_sol_paper_replication_topline.csv"
-    return checkpoint_path, data_path, output_path, topline_path
+    smoke_marker_path = output_path / "gpt56_sol_paper_replication_smoke.json"
+    return checkpoint_path, data_path, output_path, smoke_marker_path, topline_path
 
 
 @app.cell
@@ -180,6 +187,9 @@ def _(
     settings,
     smoke_button,
     smoke_is_complete,
+    smoke_is_scored,
+    smoke_marker_path,
+    source,
     spend_cap,
 ):
     is_script_mode = mo.app_meta().mode == "script"
@@ -217,6 +227,15 @@ def _(
             "Rejected: all eight isolated smoke keys must be completed for the "
             "current deployment before full execution."
         )
+    elif requested_action == "full" and not smoke_is_scored(
+        grid, source, checkpoint_records, settings.deployment, smoke_marker_path
+    ):
+        authorized_action = ""
+        selection_message = (
+            "Rejected: a verified scored smoke artifact is required for this "
+            "deployment, protocol, and source. Run the smoke action again to "
+            "score its completed responses and save the smoke proof."
+        )
     else:
         authorized_action = requested_action
         selection_message = f"Authorized {requested_action} action."
@@ -242,8 +261,12 @@ def _(
     run_replication,
     run_rows,
     settings,
+    smoke_marker_path,
 ):
     if authorized_action:
+        if authorized_action == "smoke":
+            # A failed new smoke action must not leave a previous success proof.
+            smoke_marker_path.unlink(missing_ok=True)
         print(
             f"Starting {authorized_action} run: {len(run_rows):,} requests; "
             f"deployment {settings.deployment}; spend cap ${effective_spend_cap:.2f}."
@@ -270,13 +293,18 @@ def _(
 def _(
     authorized_action,
     checkpoint_path,
+    grid,
+    mo,
     output_path,
     read_checkpoint,
     run_results,
     score_completed_records,
     settings,
+    smoke_is_complete,
+    smoke_marker_path,
     source,
     write_artifacts,
+    write_smoke_marker,
 ):
     # Depend on run_results so the checkpoint is read after the runner finishes.
     refreshed_records = read_checkpoint(checkpoint_path)
@@ -285,12 +313,34 @@ def _(
         if record.get("status") == "completed"
         and settings is not None and record.get("model") == settings.deployment
     ]
+    scores = None
+    artifact_paths = None
+    scoring_message = ""
     if authorized_action and not run_results.empty and scoring_records:
-        scores = score_completed_records(source, scoring_records, model=settings.deployment)
-        artifact_paths = write_artifacts(scores, output_path)
-    else:
-        scores = None
-        artifact_paths = None
+        try:
+            scores = score_completed_records(source, scoring_records, model=settings.deployment)
+            artifact_paths = write_artifacts(scores, output_path)
+            if authorized_action == "smoke" and smoke_is_complete(
+                grid, refreshed_records, settings.deployment
+            ):
+                write_smoke_marker(
+                    grid, source, refreshed_records, settings.deployment,
+                    smoke_marker_path, artifact_paths.topline,
+                )
+        except Exception:
+            # Resource, parser, and I/O failures can carry source text: show only
+            # actionable safe guidance, and never turn failure into smoke proof.
+            scores = None
+            artifact_paths = None
+            if authorized_action == "smoke":
+                smoke_marker_path.unlink(missing_ok=True)
+            scoring_message = (
+                "Scoring or artifact writing failed. Check local metric resources "
+                "and output access, then rerun the smoke action. Full execution "
+                "requires a successful scored smoke artifact."
+            )
+            print(scoring_message)
+    mo.md(scoring_message)
     return artifact_paths, refreshed_records, scores
 
 

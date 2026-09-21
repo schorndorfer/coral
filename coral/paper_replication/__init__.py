@@ -27,6 +27,8 @@ from .runner import (
     read_checkpoint,
     run_replication,
     smoke_is_complete,
+    smoke_is_scored,
+    write_smoke_marker,
 )
 from .scoring import (
     ArtifactPaths,
@@ -64,5 +66,7 @@ __all__ = [
     "serialize_parsed_tuples",
     "score_completed_records",
     "smoke_is_complete",
+    "smoke_is_scored",
     "write_artifacts",
+    "write_smoke_marker",
 ]
