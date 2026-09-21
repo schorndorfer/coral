@@ -232,8 +232,16 @@ def write_observed_summary(
     instance_scores: pd.DataFrame, input_rows: pd.DataFrame, path: Path,
 ) -> pd.DataFrame:
     """Aggregate scorer metrics only for document sections actually prompted."""
-    input_keys = input_rows.loc[:, _OBSERVED_SCORE_KEYS].drop_duplicates()
-    observed = instance_scores.merge(input_keys, on=list(_OBSERVED_SCORE_KEYS), how="inner")
+    join_keys = list(_OBSERVED_SCORE_KEYS)
+    input_keys = input_rows.loc[:, join_keys].copy()
+    score_rows = instance_scores.copy()
+    # CSV inference commonly makes doc_idx numeric while JSONL checkpoints
+    # preserve it as text. Normalize both sides without mutating callers.
+    for key in join_keys:
+        input_keys[key] = input_keys[key].astype(str)
+        score_rows[key] = score_rows[key].astype(str)
+    input_keys = input_keys.drop_duplicates()
+    observed = score_rows.merge(input_keys, on=join_keys, how="inner")
     summary = observed.groupby(["task", "subrelation"], as_index=False).agg(
         n_examples=("doc_idx", "size"),
         mean_bleu4=("bleu4", "mean"),

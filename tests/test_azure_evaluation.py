@@ -183,6 +183,12 @@ class AzureEvaluationHelpersTests(unittest.TestCase):
         )
         self.assertEqual(summary.iloc[0].n_examples, 1)
         self.assertEqual(summary.iloc[0].mean_bleu4, 0.8)
+
+    def test_observed_summary_normalizes_document_key_types_before_joining(self):
+        scores = SCORES_WITH_ONE_REAL_AND_ONE_SYNTHETIC_ROW.copy()
+        scores["doc_idx"] = scores["doc_idx"].astype(int)
+        summary = write_observed_summary(scores, ONE_ROW, self.summary_path)
+        self.assertEqual(summary.iloc[0].n_examples, 1)
         self.assertEqual(summary.iloc[0].mean_em_f1, 2 / 3)
 
     def test_observed_summary_uses_only_validated_export_keys(self):
