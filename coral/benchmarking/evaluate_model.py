@@ -28,6 +28,7 @@ def get_annots(fdata, dir_data):
 
 def get_outputs(fout, dir_out):
     df = pd.read_csv(os.path.join(os.path.realpath(dir_out), fout))
+    df['output'] = df['output'].fillna('')
     df.drop_duplicates(inplace=True)
     proc_outputs = list()
     n_parsed_outputs, total_parse_errors = 0, 0
@@ -210,4 +211,3 @@ if __name__ == '__main__':
              args.fscores_agg,
              args.fscores_reformatted,
              args.dir_out, eval_type='relation')
-

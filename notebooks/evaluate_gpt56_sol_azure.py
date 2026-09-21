@@ -72,7 +72,6 @@ def _():
         build_paper_comparison,
         call_without_stdout,
         estimate_cost,
-        json,
         load_azure_settings,
         math,
         mo,
@@ -88,20 +87,18 @@ def _():
 
 @app.cell
 def _(mo, pydantic):
-    mo.md(
-        f"""
-        # Azure GPT-5.6 Sol evaluation
+    mo.md(f"""
+    # Azure GPT-5.6 Sol evaluation
 
-        This notebook sends clinical text only after an explicit run action. It starts
-        with an **eight-input smoke test** and keeps the projected and observed spend
-        visible. GPT-5.6 Sol pricing used here is $4.00 / million input tokens and
-        $20.00 / million output tokens.
+    This notebook sends clinical text only after an explicit run action. It starts
+    with an **eight-input smoke test** and keeps the projected and observed spend
+    visible. GPT-5.6 Sol pricing used here is $4.00 / million input tokens and
+    $20.00 / million output tokens.
 
-        The repository-wide legacy macro is flawed because it includes synthetic
-        Cartesian-product rows. Use the observed-only summary below for comparisons.
-        This notebook was generated with marimo and uses pydantic {pydantic.VERSION}.
-        """
-    )
+    The repository-wide legacy macro is flawed because it includes synthetic
+    Cartesian-product rows. Use the observed-only summary below for comparisons.
+    This notebook was generated with marimo and uses pydantic {pydantic.VERSION}.
+    """)
     return
 
 
@@ -234,7 +231,16 @@ def _(mo):
 
 
 @app.cell
-def _(Usage, estimate_cost, input_limit, input_rows, math, mo, output_token_ceiling, pd):
+def _(
+    Usage,
+    estimate_cost,
+    input_limit,
+    input_rows,
+    math,
+    mo,
+    output_token_ceiling,
+    pd,
+):
     requested_limit = int(input_limit.value or 8)
     preview_rows = input_rows.head(min(max(requested_limit, 1), 515))
     estimated_input_tokens = sum(
@@ -255,7 +261,7 @@ def _(Usage, estimate_cost, input_limit, input_rows, math, mo, output_token_ceil
         ]
     )
     projection_display
-    return (preview_rows,)
+    return
 
 
 @app.cell
@@ -368,6 +374,7 @@ def _(mo, pd, run_results):
 
 @app.cell
 def _(
+    Path,
     aggregate_score_path,
     call_without_stdout,
     checkpoint_path,
@@ -376,10 +383,9 @@ def _(
     mo,
     observed_summary_path,
     output_path,
-    Path,
     pd,
-    reformatted_score_path,
     read_checkpoint_records,
+    reformatted_score_path,
     run_results,
     settings,
     write_legacy_csv,

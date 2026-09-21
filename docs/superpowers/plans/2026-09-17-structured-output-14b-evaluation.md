@@ -970,3 +970,66 @@ the legacy CSV has 515 rows, and all metric values are finite and within
 git add README.md
 git commit -m "docs: document structured 14b evaluation"
 ```
+
+---
+
+## Follow-up Roadmap: Improve Reliability and Consistency
+
+This roadmap applies after the current 14B run finishes. Preserve the current
+JSONL, raw attempts, validation errors, and legacy scores as the baseline before
+changing prompts, schemas, decoding, or model selection.
+
+- [ ] **Step 1: Quantify the baseline by task and failure type**
+
+Read the canonical JSONL and produce a table grouped by task and
+`validation_status`, with counts for malformed JSON, schema failures, and
+verbatim-evidence failures. Separately compute relation-level BLEU-4,
+ROUGE-1, and exact-match precision/recall/F1 for the accepted legacy rows.
+Keep strict structured-validity metrics separate from legacy accuracy metrics.
+
+- [ ] **Step 2: Add exact evidence-span selection**
+
+Add a post-generation evidence selector that receives the source section and
+the model's extracted records, then chooses each `evidence_quotes` value as an
+exact substring of the source text. Preserve the model's raw quote and the
+selected source span in checkpoint metadata. Add tests for paraphrased quotes,
+multiple matching spans, CRLF normalization, and records with no valid span.
+Run this selector before declaring a response validation failure.
+
+- [ ] **Step 3: Constrain JSON decoding**
+
+Integrate schema-guided decoding into the Hugging Face generation callback so
+the model can emit only syntactically valid JSON with task-appropriate fields
+and enum values. Keep a plain-generation fallback and record the decoding mode
+in each checkpoint. Add fake-generator tests for constrained and fallback
+paths, then rerun the eight-input smoke benchmark before a full evaluation.
+
+- [ ] **Step 4: Tighten task schemas and prompts**
+
+Require date-like formats in date fields, use `null` when a date is unavailable,
+and add task-specific examples that distinguish clinical facts from section
+headings such as `Interim History`. Keep source evidence selection separate from
+fact extraction. Add prompt tests for every tightened rule and rerun the smoke
+benchmark to measure malformed-output and evidence-failure changes.
+
+- [ ] **Step 5: Tune on a held-out development slice**
+
+Create a fixed development slice from the annotated inputs and reserve the
+remaining inputs for evaluation. Compare prompt variants using structured
+validity, evidence-grounding rate, retry recovery, and legacy relation F1. Do
+not select prompts using the final evaluation slice.
+
+- [ ] **Step 6: Compare stronger models under the same protocol**
+
+Run each candidate model on the same development slice, with identical tasks,
+schemas, decoding limits, and evidence validation. Record latency, peak MPS
+memory, malformed JSON rate, evidence failure rate, and legacy relation scores.
+Only promote a model to the full evaluation when it improves reliability at an
+acceptable memory and runtime cost.
+
+- [ ] **Step 7: Add dual score reporting**
+
+Report the paper-compatible legacy metrics and the stricter structured metrics
+side by side. If terminology normalization is added later, report ontology
+normalized scores as a third track and retain the original text-level metrics
+for comparability with CORAL results.
