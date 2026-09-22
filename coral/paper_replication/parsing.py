@@ -8,13 +8,13 @@ from coral import CancerDiagnosis, task_to_default_tuple_dict
 
 from .protocol import TASK_ORDER
 
-
 TASK_CONSTRUCTORS = {
     task: type(default)
     for task, default in task_to_default_tuple_dict.items()
     if task in TASK_ORDER
 }
 NON_ANSWERS = ("no ", "none ")
+PAPER_SOURCE_CANDIDATE = re.compile(r"[A-Za-z]+\(.+\{.+\}\)")
 CONSTRUCTOR_DEFAULTS = {
     type(default): default for default in task_to_default_tuple_dict.values()
 } | {CancerDiagnosis: CancerDiagnosis({"unknown"})}
@@ -119,6 +119,35 @@ def parse_paper_output(output: object, task: str) -> list[tuple]:
         except ValueError:
             parsed.append(task_to_default_tuple_dict[task])
     return parsed
+
+
+def _parse_paper_source_candidate(source: str, task: str) -> list[tuple]:
+    """Safely parse the call or comma-separated calls matched by paper code."""
+    try:
+        expression = ast.parse(source, mode="eval")
+    except (SyntaxError, TypeError) as error:
+        raise ValueError("invalid paper output candidate") from error
+    nodes = expression.body.elts if isinstance(expression.body, ast.Tuple) else [expression.body]
+    parsed = []
+    for node in nodes:
+        segment = ast.get_source_segment(source, node)
+        if segment is None:
+            raise ValueError("paper output candidate has no source segment")
+        parsed.append(parse_namedtuple_expression(segment, task))
+    return parsed
+
+
+def parse_paper_source_output(output: object, task: str) -> list[tuple]:
+    """Safely reproduce the paper code's extract-valid-or-default behavior."""
+    _constructor_for_task(task)
+    parsed = []
+    for candidate in PAPER_SOURCE_CANDIDATE.findall(_paper_output_text(output)):
+        try:
+            candidate_values = _parse_paper_source_candidate(candidate, task)
+        except ValueError:
+            continue
+        parsed.extend(candidate_values)
+    return parsed or [task_to_default_tuple_dict[task]]
 
 
 def parse_annotation_set(annotation_set: object, task: str) -> list[tuple]:

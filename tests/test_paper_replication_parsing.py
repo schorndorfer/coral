@@ -6,11 +6,44 @@ from coral.paper_replication.parsing import (
     parse_annotation_set,
     parse_namedtuple_expression,
     parse_paper_output,
+    parse_paper_source_output,
     serialize_parsed_tuples,
 )
 
 
 class PaperParserTests(unittest.TestCase):
+    def test_source_parser_extracts_valid_tuples_and_ignores_surrounding_text(self):
+        output = (
+            "Here are the requested values:\n"
+            "- SymptomEnt(Symptom='fatigue', Datetime={'today'})\n"
+            "SymptomEnt(Symptom='bad shape', Datetime=None)\n"
+            "```"
+        )
+
+        self.assertEqual(
+            parse_paper_source_output(output, "symptoms"),
+            [SymptomEnt("fatigue", {"today"})],
+        )
+
+    def test_source_parser_defaults_once_when_no_valid_tuple_is_extracted(self):
+        output = "Explanation only\nN/A\nSymptomEnt(Symptom='bad', Datetime=None)"
+
+        self.assertEqual(
+            parse_paper_source_output(output, "symptoms"),
+            [task_to_default_tuple_dict["symptoms"]],
+        )
+
+    def test_source_parser_never_executes_embedded_python(self):
+        output = (
+            "- SymptomEnt(Symptom=__import__('os').system('false'), "
+            "Datetime={'today'})"
+        )
+
+        self.assertEqual(
+            parse_paper_source_output(output, "symptoms"),
+            [task_to_default_tuple_dict["symptoms"]],
+        )
+
     def test_malformed_field_shapes_default_and_serialize_safely(self):
         malformed = (
             "SymptomEnt('fatigue', None)",

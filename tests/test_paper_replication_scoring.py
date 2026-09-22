@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from coral import CancerDiagnosis, PrescribedMedEnt, StageEnt, SymptomEnt
+from coral.paper_replication.parsing import parse_paper_source_output
 from coral.paper_replication.scoring import (
     format_relations,
     score_completed_records,
@@ -71,6 +72,24 @@ COMPLETED = {
 
 
 class PaperScoringTests(unittest.TestCase):
+    def test_source_parser_scores_a_wrapped_valid_tuple(self):
+        wrapped = {
+            **COMPLETED,
+            "output_text": (
+                "Here is the result:\n"
+                "- SymptomEnt(Symptom='fatigue', Datetime={'today'})"
+            ),
+        }
+
+        scores = score_completed_records(
+            SOURCE,
+            [wrapped],
+            FakeMetrics(),
+            output_parser=parse_paper_source_output,
+        )
+
+        self.assertEqual(scores.instances.em_f1.tolist(), [1.0])
+
     def test_crashing_model_shapes_are_defaulted_before_serializing_and_scoring(self):
         for output in (
             "SymptomEnt('fatigue', None)", "SymptomEnt('fatigue', {1, 'today'})",

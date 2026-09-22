@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -222,6 +223,7 @@ def score_completed_records(
     metrics: MetricProtocol | None = None,
     *,
     model: str | None = None,
+    output_parser: Callable[[object, str], list[tuple]] = parse_paper_output,
 ) -> ReplicationScores:
     """Score one deployment's completed outputs using the paper's relation loop.
 
@@ -242,7 +244,7 @@ def score_completed_records(
     for record in completed:
         key = _completed_record_key(record)
         doc_idx, section_name, task, model = key
-        parsed_output = parse_paper_output(record.get("output_text"), task)
+        parsed_output = output_parser(record.get("output_text"), task)
         output_records.append({
             **record,
             "parsed_output_json": serialize_parsed_tuples(parsed_output),
